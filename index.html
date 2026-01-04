@@ -1,8 +1,9 @@
+
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>旋律记录 + 小提琴回放</title>
+<title>哼唱旋律回放</title>
 <style>
 body {
   font-family: system-ui, sans-serif;
@@ -117,6 +118,8 @@ document.getElementById("start").onclick = async () => {
   document.getElementById("melody").innerHTML = "";
 
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  await audioCtx.resume();
+
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const source = audioCtx.createMediaStreamSource(stream);
 
@@ -138,7 +141,11 @@ document.getElementById("stop").onclick = () => {
 };
 
 document.getElementById("play").onclick = async () => {
+  if (melody.length === 0) return;
+
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  await ctx.resume();
+
   let t = ctx.currentTime;
 
   melody.forEach(n => {
@@ -146,7 +153,7 @@ document.getElementById("play").onclick = async () => {
     const gain = ctx.createGain();
     const filter = ctx.createBiquadFilter();
 
-    osc.type = "sawtooth";          // 弓弦感
+    osc.type = "sawtooth";
     osc.frequency.value = freqFromNote(n.note);
 
     filter.type = "lowpass";
