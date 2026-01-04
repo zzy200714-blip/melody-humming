@@ -2,46 +2,56 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>音高检测</title>
+<title>旋律记录</title>
 <style>
 body {
   font-family: system-ui, sans-serif;
-  padding: 32px;
+  padding: 24px;
 }
-#pitch {
-  font-size: 24px;
+button {
+  margin-right: 10px;
+  padding: 8px 14px;
+}
+#current {
+  font-size: 22px;
+  margin: 12px 0;
+}
+#melody {
   margin-top: 20px;
+  white-space: pre-wrap;
+}
+.note {
+  display: inline-block;
+  padding: 4px 6px;
+  margin: 2px;
+  border-radius: 4px;
+  background: #e5e7eb;
 }
 </style>
 </head>
 <body>
 
-<button id="start">启动音高检测</button>
-<div id="pitch">等待声音...</div>
+<button id="start">开始录制</button>
+<button id="stop">停止</button>
+
+<div id="current">当前音符：-</div>
+<div id="melody"></div>
 
 <script>
 let audioCtx, analyser, data;
+let recording = false;
+
+let melody = [];
+let currentNote = null;
+let noteStartTime = 0;
+const STABLE_TIME = 150; // ms
 
 function autoCorrelate(buf, sampleRate) {
   let SIZE = buf.length;
   let rms = 0;
-  for (let i = 0; i < SIZE; i++) {
-    let val = buf[i];
-    rms += val * val;
-  }
+  for (let i = 0; i < SIZE; i++) rms += buf[i] * buf[i];
   rms = Math.sqrt(rms / SIZE);
   if (rms < 0.01) return -1;
-
-  let r1 = 0, r2 = SIZE - 1, threshold = 0.2;
-  for (let i = 0; i < SIZE / 2; i++) {
-    if (Math.abs(buf[i]) < threshold) { r1 = i; break; }
-  }
-  for (let i = 1; i < SIZE / 2; i++) {
-    if (Math.abs(buf[SIZE - i]) < threshold) { r2 = SIZE - i; break; }
-  }
-
-  buf = buf.slice(r1, r2);
-  SIZE = buf.length;
 
   let c = new Array(SIZE).fill(0);
   for (let i = 0; i < SIZE; i++) {
@@ -52,26 +62,62 @@ function autoCorrelate(buf, sampleRate) {
 
   let d = 0;
   while (c[d] > c[d + 1]) d++;
-  let maxval = -1, maxpos = -1;
+  let maxpos = d;
   for (let i = d; i < SIZE; i++) {
-    if (c[i] > maxval) {
-      maxval = c[i];
-      maxpos = i;
-    }
+    if (c[i] > c[maxpos]) maxpos = i;
   }
 
-  let T0 = maxpos;
-  return sampleRate / T0;
+  return sampleRate / maxpos;
 }
 
 function noteFromPitch(freq) {
   const A4 = 440;
-  const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-  let n = Math.round(12 * Math.log2(freq / A4)) + 69;
-  return noteNames[n % 12];
+  const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  const n = Math.round(12 * Math.log2(freq / A4)) + 69;
+  return names[n % 12];
+}
+
+function update() {
+  if (!recording) return;
+
+  analyser.getFloatTimeDomainData(data);
+  const freq = autoCorrelate(data, audioCtx.sampleRate);
+
+  if (freq !== -1) {
+    const note = noteFromPitch(freq);
+    document.getElementById("current").textContent = `当前音符：${note}`;
+
+    const now = performance.now();
+
+    if (note !== currentNote) {
+      if (currentNote && now - noteStartTime >= STABLE_TIME) {
+        melody.push({
+          note: currentNote,
+          duration: now - noteStartTime
+        });
+        renderMelody();
+      }
+      currentNote = note;
+      noteStartTime = now;
+    }
+  }
+
+  requestAnimationFrame(update);
+}
+
+function renderMelody() {
+  const box = document.getElementById("melody");
+  box.innerHTML = melody
+    .map(n => `<span class="note">${n.note}</span>`)
+    .join("");
 }
 
 document.getElementById("start").onclick = async () => {
+  melody = [];
+  currentNote = null;
+  recording = true;
+  document.getElementById("melody").innerHTML = "";
+
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const source = audioCtx.createMediaStreamSource(stream);
@@ -81,22 +127,25 @@ document.getElementById("start").onclick = async () => {
   data = new Float32Array(analyser.fftSize);
 
   source.connect(analyser);
-
-  function update() {
-    analyser.getFloatTimeDomainData(data);
-    const freq = autoCorrelate(data, audioCtx.sampleRate);
-    const el = document.getElementById("pitch");
-
-    if (freq !== -1) {
-      el.textContent = `音高：${freq.toFixed(1)} Hz ｜ 音名：${noteFromPitch(freq)}`;
-    } else {
-      el.textContent = "未检测到稳定音高";
-    }
-    requestAnimationFrame(update);
-  }
-
   update();
 };
+
+document.getElementById("stop").onclick = () => {
+  recording = false;
+  const now = performance.now();
+  if (currentNote) {
+    melody.push({
+      note: currentNote,
+      duration: now - noteStartTime
+    });
+    renderMelody();
+  }
+};
+</script>
+
+</body>
+</html>
+
 </script>
 
 </body>
