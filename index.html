@@ -3,7 +3,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>哼唱旋律 → 小提琴回放</title>
+<title>哼唱旋律 → 小提琴回放（Vibrato）</title>
 <style>
 body {
   font-family: system-ui, sans-serif;
@@ -14,7 +14,7 @@ button {
   margin-right: 8px;
 }
 #current {
-  font-size: 20px;
+  font-size: 22px;
   margin: 12px 0;
 }
 .note {
@@ -32,7 +32,7 @@ button {
 <button id="stop">停止</button>
 <button id="play">▶ 回放旋律</button>
 
-<div id="current">当前频率：-</div>
+<div id="current">当前音调：-</div>
 <div id="melody"></div>
 
 <script>
@@ -44,7 +44,19 @@ let currentFreq = null;
 let freqStartTime = 0;
 const STABLE_TIME = 120;
 
-// === 音高检测（自相关）===
+// === Hz → 音名 + cents ===
+function freqToNoteInfo(freq) {
+  const A4 = 440;
+  const noteNames = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const noteNumber = 12 * Math.log2(freq / A4) + 69;
+  const rounded = Math.round(noteNumber);
+  return {
+    note: noteNames[rounded % 12],
+    cents: Math.round((noteNumber - rounded) * 100)
+  };
+}
+
+// === 自相关音高检测 ===
 function autoCorrelate(buf, sampleRate) {
   let SIZE = buf.length;
   let rms = 0;
@@ -68,7 +80,7 @@ function autoCorrelate(buf, sampleRate) {
   return sampleRate / maxpos;
 }
 
-// === 更新检测 ===
+// === 检测更新 ===
 function update() {
   if (!recording) return;
 
@@ -76,19 +88,14 @@ function update() {
   const freq = autoCorrelate(data, audioCtx.sampleRate);
 
   if (freq > 60 && freq < 1200) {
+    const info = freqToNoteInfo(freq);
     document.getElementById("current").textContent =
-      `当前频率：${freq.toFixed(1)} Hz`;
+      `当前音调：${info.note}${info.cents ? (info.cents > 0 ? " +" : " ") + info.cents + "¢" : ""}`;
 
     const now = performance.now();
-    if (
-      !currentFreq ||
-      Math.abs(freq - currentFreq) / currentFreq > 0.05
-    ) {
+    if (!currentFreq || Math.abs(freq - currentFreq) / currentFreq > 0.05) {
       if (currentFreq && now - freqStartTime > STABLE_TIME) {
-        melody.push({
-          freq: currentFreq,
-          duration: now - freqStartTime
-        });
+        melody.push({ freq: currentFreq, duration: now - freqStartTime });
         render();
       }
       currentFreq = freq;
@@ -100,10 +107,13 @@ function update() {
 
 function render() {
   document.getElementById("melody").innerHTML =
-    melody.map(n => `<span class="note">${n.freq.toFixed(0)}Hz</span>`).join("");
+    melody.map(n => {
+      const i = freqToNoteInfo(n.freq);
+      return `<span class="note">${i.note}${i.cents ? (i.cents > 0 ? " +" : " ") + i.cents + "¢" : ""}</span>`;
+    }).join("");
 }
 
-// === 按钮逻辑 ===
+// === 按钮 ===
 document.getElementById("start").onclick = async () => {
   melody = [];
   currentFreq = null;
@@ -128,10 +138,7 @@ document.getElementById("stop").onclick = () => {
   recording = false;
   const now = performance.now();
   if (currentFreq) {
-    melody.push({
-      freq: currentFreq,
-      duration: now - freqStartTime
-    });
+    melody.push({ freq: currentFreq, duration: now - freqStartTime });
     render();
   }
 };
@@ -150,6 +157,15 @@ document.getElementById("play").onclick = async () => {
     const gain = ctx.createGain();
     const filter = ctx.createBiquadFilter();
 
+    // === Vibrato LFO ===
+    const lfo = ctx.createOscillator();
+    const lfoGain = ctx.createGain();
+
+    lfo.frequency.value = 5.5;      // vibrato 速度
+    lfoGain.gain.value = n.freq * 0.012; // ≈ ±20 cents
+
+    lfo.connect(lfoGain).connect(osc.frequency);
+
     osc.type = "sawtooth";
     osc.frequency.setValueAtTime(lastFreq, t);
     osc.frequency.linearRampToValueAtTime(n.freq, t + 0.05);
@@ -167,7 +183,10 @@ document.getElementById("play").onclick = async () => {
     osc.connect(filter).connect(gain).connect(ctx.destination);
 
     osc.start(t);
+    lfo.start(t);
+
     osc.stop(t + n.duration / 1000);
+    lfo.stop(t + n.duration / 1000);
 
     lastFreq = n.freq;
     t += n.duration / 1000;
