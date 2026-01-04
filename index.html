@@ -2,55 +2,104 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<title>哼唱旋律 → 拉小提琴</title>
+<meta charset="UTF-8" />
+<title>哼唱旋律 → 数字小提琴（完整版）</title>
 <style>
 body {
+  margin: 0;
+  background: #0e0e0e;
+  color: #eee;
   font-family: system-ui, sans-serif;
-  padding: 20px;
+  user-select: none;
+}
+#top {
+  padding: 10px;
 }
 button {
-  padding: 8px 14px;
   margin-right: 8px;
+  padding: 6px 12px;
 }
-#current {
-  font-size: 20px;
-  margin: 12px 0;
+#status {
+  margin-left: 12px;
 }
-.note {
-  display: inline-block;
-  padding: 4px 6px;
-  margin: 2px;
-  background: #e5e7eb;
-  border-radius: 4px;
+#stage {
+  height: calc(100vh - 60px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
-#hint {
-  margin-top: 12px;
-  opacity: 0.7;
+#violin {
+  position: relative;
+  width: 200px;
+  height: 520px;
+}
+.body {
+  position: absolute;
+  left: 30px;
+  top: 80px;
+  width: 140px;
+  height: 360px;
+  background: #5a2410;
+  border-radius: 70px;
+}
+.neck {
+  position: absolute;
+  left: 70px;
+  top: 0;
+  width: 60px;
+  height: 120px;
+  background: #2b1208;
+}
+.string {
+  position: absolute;
+  width: 3px;
+  top: 0;
+  bottom: 0;
+  background: #aaa;
+  opacity: 0.5;
+}
+.string.active {
+  background: #ffd27d;
+  opacity: 1;
+}
+#bow {
+  position: absolute;
+  width: 260px;
+  height: 6px;
+  background: #ccc;
+  left: -30px;
+  pointer-events: none;
+}
+#label {
+  margin-top: 6px;
 }
 </style>
 </head>
 <body>
 
-<button id="record">🎤 开始录制旋律</button>
-<button id="stop">⏹ 停止录制</button>
-<button id="play">🎻 进入拉琴模式</button>
+<div id="top">
+  <button id="rec">🎤 录旋律</button>
+  <button id="stop">⏹ 停止</button>
+  <button id="play">🎻 拉琴</button>
+  <span id="status">未开始</span>
+  <div id="label"></div>
+</div>
 
-<div id="current">当前音调：-</div>
-<div id="melody"></div>
-<div id="hint">提示：进入拉琴模式后，左右移动鼠标 = 拉弓</div>
+<div id="stage">
+  <div id="violin">
+    <div class="neck"></div>
+    <div class="body"></div>
+    <div class="string" data-i="0" style="left:88px"></div>
+    <div class="string" data-i="1" style="left:96px"></div>
+    <div class="string" data-i="2" style="left:104px"></div>
+    <div class="string" data-i="3" style="left:112px"></div>
+    <div id="bow"></div>
+  </div>
+</div>
 
 <script>
-/* ---------- 工具函数 ---------- */
-function freqToNoteInfo(freq) {
-  const A4 = 440;
-  const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-  const n = 12 * Math.log2(freq / A4) + 69;
-  const r = Math.round(n);
-  return { note: names[r % 12], cents: Math.round((n - r) * 100) };
-}
-
-function autoCorrelate(buf, sampleRate) {
+/* ---------------- 音高检测 ---------------- */
+function autoCorrelate(buf, sr) {
   let SIZE = buf.length, rms = 0;
   for (let i = 0; i < SIZE; i++) rms += buf[i] * buf[i];
   rms = Math.sqrt(rms / SIZE);
@@ -63,44 +112,23 @@ function autoCorrelate(buf, sampleRate) {
   while (c[d] > c[d + 1]) d++;
   let max = d;
   for (let i = d; i < SIZE; i++) if (c[i] > c[max]) max = i;
-  return sampleRate / max;
+  return sr / max;
 }
 
-/* ---------- 旋律录制 ---------- */
+function freqToNoteName(f) {
+  const noteNames = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const n = Math.round(12 * Math.log2(f / 440) + 69);
+  return noteNames[n % 12];
+}
+
+/* ---------------- 录旋律 ---------------- */
 let audioCtx, analyser, data;
 let melody = [];
 let recording = false;
-let currentFreq = null;
-let startTime = 0;
+let curFreq = null;
+let t0 = 0;
 
-function updatePitch() {
-  if (!recording) return;
-  analyser.getFloatTimeDomainData(data);
-  const freq = autoCorrelate(data, audioCtx.sampleRate);
-  if (freq > 60 && freq < 1200) {
-    const info = freqToNoteInfo(freq);
-    document.getElementById("current").textContent =
-      `当前音调：${info.note}${info.cents ? " " + info.cents + "¢" : ""}`;
-    const now = performance.now();
-    if (!currentFreq || Math.abs(freq - currentFreq) / currentFreq > 0.05) {
-      if (currentFreq) melody.push({ freq: currentFreq, dur: now - startTime });
-      currentFreq = freq;
-      startTime = now;
-      renderMelody();
-    }
-  }
-  requestAnimationFrame(updatePitch);
-}
-
-function renderMelody() {
-  document.getElementById("melody").innerHTML =
-    melody.map(n => {
-      const i = freqToNoteInfo(n.freq);
-      return `<span class="note">${i.note}</span>`;
-    }).join("");
-}
-
-document.getElementById("record").onclick = async () => {
+rec.onclick = async () => {
   melody = [];
   recording = true;
   audioCtx = new AudioContext();
@@ -110,74 +138,128 @@ document.getElementById("record").onclick = async () => {
   analyser.fftSize = 2048;
   data = new Float32Array(analyser.fftSize);
   audioCtx.createMediaStreamSource(stream).connect(analyser);
-  updatePitch();
+  status.textContent = "正在录旋律…";
+  loop();
 };
 
-document.getElementById("stop").onclick = () => {
+stop.onclick = () => {
   recording = false;
-  if (currentFreq)
-    melody.push({ freq: currentFreq, dur: performance.now() - startTime });
-  renderMelody();
+  if (curFreq) melody.push({ f: curFreq, d: performance.now() - t0 });
+  status.textContent = "旋律已保存";
 };
 
-/* ---------- 拉小提琴回放 ---------- */
-let violinCtx, osc, gain, filter, lfo, lfoGain;
-let playIndex = 0;
-let noteStart = 0;
-let lastX = null, lastTime = null;
+function loop() {
+  if (!recording) return;
+  analyser.getFloatTimeDomainData(data);
+  const f = autoCorrelate(data, audioCtx.sampleRate);
+  if (f > 60 && f < 1200) {
+    const now = performance.now();
+    if (!curFreq || Math.abs(f - curFreq) / curFreq > 0.05) {
+      if (curFreq) melody.push({ f: curFreq, d: now - t0 });
+      curFreq = f;
+      t0 = now;
+    }
+  }
+  requestAnimationFrame(loop);
+}
 
-document.getElementById("play").onclick = async () => {
-  if (!melody.length) return alert("请先哼唱一段旋律");
-  violinCtx = new AudioContext();
-  await violinCtx.resume();
-  playIndex = 0;
+/* ---------------- 拉琴系统 ---------------- */
+const strings = [
+  { name: "G", base: 196 },
+  { name: "D", base: 293.66 },
+  { name: "A", base: 440 },
+  { name: "E", base: 659.25 }
+];
+
+let ctx, osc1, osc2, gain, filter, convolver;
+let idx = 0, noteStart = 0;
+let bowPressure = 0.4;
+let lastX = null, lastT = null;
+let currentString = 2;
+
+play.onclick = async () => {
+  if (!melody.length) return alert("先录旋律");
+  ctx = new AudioContext();
+  await ctx.resume();
+
+  osc1 = ctx.createOscillator();
+  osc2 = ctx.createOscillator();
+  gain = ctx.createGain();
+  filter = ctx.createBiquadFilter();
+  convolver = ctx.createConvolver();
+
+  osc1.type = "sawtooth";
+  osc2.type = "triangle";
+
+  filter.type = "bandpass";
+  filter.frequency.value = 1200;
+  filter.Q.value = 2;
+
+  gain.gain.value = 0;
+
+  osc1.connect(filter);
+  osc2.connect(filter);
+  filter.connect(gain);
+  gain.connect(ctx.destination);
+
+  osc1.start();
+  osc2.start();
+
+  idx = 0;
   noteStart = performance.now();
+  status.textContent = "拉弓演奏中";
 };
+
+document.addEventListener("wheel", e => {
+  bowPressure = Math.min(1, Math.max(0.05, bowPressure + (e.deltaY < 0 ? 0.05 : -0.05)));
+});
+
+document.addEventListener("keydown", e => {
+  if (e.key >= "1" && e.key <= "4") currentString = e.key - 1;
+  if (e.code === "Space") gain.gain.setTargetAtTime(0, ctx.currentTime, 0.05);
+});
 
 document.addEventListener("mousemove", e => {
-  if (!violinCtx || playIndex >= melody.length) return;
+  bow.style.top = e.clientY - 3 + "px";
+  if (!ctx || idx >= melody.length) return;
+
+  const rect = violin.getBoundingClientRect();
+  if (e.clientX < rect.left || e.clientX > rect.right) return;
+
+  const yRatio = (e.clientY - rect.top) / rect.height;
+  currentString = Math.min(3, Math.max(0, Math.floor(yRatio * 4)));
+
+  document.querySelectorAll(".string").forEach(s => s.classList.remove("active"));
+  document.querySelector(`.string[data-i="${currentString}"]`).classList.add("active");
+
+  label.textContent =
+    `当前弦：${strings[currentString].name} ｜ 音名：${freqToNoteName(melody[idx].f)} ｜ 弓压：${bowPressure.toFixed(2)}`;
+
   const now = performance.now();
-  if (!lastTime) { lastTime = now; lastX = e.clientX; return; }
-  const speed = Math.abs(e.clientX - lastX) / (now - lastTime);
+  if (!lastT) { lastT = now; lastX = e.clientX; return; }
+  const speed = Math.abs(e.clientX - lastX) / (now - lastT);
   lastX = e.clientX;
-  lastTime = now;
+  lastT = now;
 
-  if (speed > 0.15) {
-    if (!osc) {
-      osc = violinCtx.createOscillator();
-      gain = violinCtx.createGain();
-      filter = violinCtx.createBiquadFilter();
-      lfo = violinCtx.createOscillator();
-      lfoGain = violinCtx.createGain();
+  if (speed > 0.12) {
+    const n = melody[idx];
+    const targetFreq = n.f;
+    osc1.frequency.setTargetAtTime(targetFreq, ctx.currentTime, 0.03);
+    osc2.frequency.setTargetAtTime(targetFreq * 2, ctx.currentTime, 0.03);
 
-      osc.type = "sawtooth";
-      filter.type = "bandpass";
-      filter.frequency.value = 1200;
+    filter.frequency.setTargetAtTime(800 + bowPressure * 2000, ctx.currentTime, 0.05);
+    gain.gain.setTargetAtTime(Math.min(speed, 1) * bowPressure, ctx.currentTime, 0.03);
 
-      lfo.frequency.value = 5.5;
-      lfoGain.gain.value = melody[playIndex].freq * 0.01;
-      lfo.connect(lfoGain).connect(osc.frequency);
-
-      osc.connect(filter).connect(gain).connect(violinCtx.destination);
-      gain.gain.value = 0;
-
-      osc.start();
-      lfo.start();
-    }
-
-    const note = melody[playIndex];
-    osc.frequency.setTargetAtTime(note.freq, violinCtx.currentTime, 0.03);
-    gain.gain.setTargetAtTime(Math.min(speed, 0.8), violinCtx.currentTime, 0.02);
-
-    if (now - noteStart > note.dur) {
-      playIndex++;
+    if (now - noteStart > n.d) {
+      idx++;
       noteStart = now;
     }
-  } else if (osc) {
-    gain.gain.setTargetAtTime(0, violinCtx.currentTime, 0.05);
+  } else {
+    gain.gain.setTargetAtTime(0, ctx.currentTime, 0.08);
   }
 });
 </script>
 
 </body>
 </html>
+
