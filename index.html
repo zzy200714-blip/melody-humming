@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>旋律记录</title>
+<title>旋律记录 + 小提琴回放</title>
 <style>
 body {
   font-family: system-ui, sans-serif;
@@ -17,8 +17,7 @@ button {
   margin: 12px 0;
 }
 #melody {
-  margin-top: 20px;
-  white-space: pre-wrap;
+  margin-top: 16px;
 }
 .note {
   display: inline-block;
@@ -33,6 +32,7 @@ button {
 
 <button id="start">开始录制</button>
 <button id="stop">停止</button>
+<button id="play">▶ 播放旋律</button>
 
 <div id="current">当前音符：-</div>
 <div id="melody"></div>
@@ -44,7 +44,7 @@ let recording = false;
 let melody = [];
 let currentNote = null;
 let noteStartTime = 0;
-const STABLE_TIME = 150; // ms
+const STABLE_TIME = 150;
 
 function autoCorrelate(buf, sampleRate) {
   let SIZE = buf.length;
@@ -66,15 +66,20 @@ function autoCorrelate(buf, sampleRate) {
   for (let i = d; i < SIZE; i++) {
     if (c[i] > c[maxpos]) maxpos = i;
   }
-
   return sampleRate / maxpos;
 }
 
 function noteFromPitch(freq) {
   const A4 = 440;
-  const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
   const n = Math.round(12 * Math.log2(freq / A4)) + 69;
   return names[n % 12];
+}
+
+function freqFromNote(note) {
+  const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const n = names.indexOf(note);
+  return 440 * Math.pow(2, (n - 9) / 12);
 }
 
 function update() {
@@ -88,28 +93,21 @@ function update() {
     document.getElementById("current").textContent = `当前音符：${note}`;
 
     const now = performance.now();
-
     if (note !== currentNote) {
       if (currentNote && now - noteStartTime >= STABLE_TIME) {
-        melody.push({
-          note: currentNote,
-          duration: now - noteStartTime
-        });
+        melody.push({ note: currentNote, duration: now - noteStartTime });
         renderMelody();
       }
       currentNote = note;
       noteStartTime = now;
     }
   }
-
   requestAnimationFrame(update);
 }
 
 function renderMelody() {
-  const box = document.getElementById("melody");
-  box.innerHTML = melody
-    .map(n => `<span class="note">${n.note}</span>`)
-    .join("");
+  document.getElementById("melody").innerHTML =
+    melody.map(n => `<span class="note">${n.note}</span>`).join("");
 }
 
 document.getElementById("start").onclick = async () => {
@@ -134,18 +132,38 @@ document.getElementById("stop").onclick = () => {
   recording = false;
   const now = performance.now();
   if (currentNote) {
-    melody.push({
-      note: currentNote,
-      duration: now - noteStartTime
-    });
+    melody.push({ note: currentNote, duration: now - noteStartTime });
     renderMelody();
   }
 };
-</script>
 
-</body>
-</html>
+document.getElementById("play").onclick = async () => {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  let t = ctx.currentTime;
 
+  melody.forEach(n => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const filter = ctx.createBiquadFilter();
+
+    osc.type = "sawtooth";          // 弓弦感
+    osc.frequency.value = freqFromNote(n.note);
+
+    filter.type = "lowpass";
+    filter.frequency.value = 1800;
+
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.6, t + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + n.duration / 1000);
+
+    osc.connect(filter).connect(gain).connect(ctx.destination);
+
+    osc.start(t);
+    osc.stop(t + n.duration / 1000);
+
+    t += n.duration / 1000;
+  });
+};
 </script>
 
 </body>
