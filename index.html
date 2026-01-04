@@ -2,174 +2,210 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<title>哼唱定音 → 真实感小提琴演奏</title>
+<meta charset="UTF-8" />
+<title>哼唱定音 → 自动小提琴演奏</title>
 <style>
-body{margin:0;background:#0c0c0c;color:#eee;font-family:system-ui}
-#ui{padding:12px}
-button,select{margin-right:8px;padding:6px}
-#meter{margin-top:6px;height:6px;background:#333}
-#stable{height:6px;background:#5cff8a;width:0%}
-#stage{height:calc(100vh - 100px)}
+body {
+  margin: 0;
+  background: #0b0b0b;
+  color: #f2f2f2;
+  font-family: system-ui;
+}
+#ui {
+  padding: 12px;
+}
+button {
+  margin-right: 8px;
+  padding: 6px 12px;
+}
+#note {
+  font-size: 32px;
+  margin-top: 8px;
+}
+#stable {
+  height: 6px;
+  background: #333;
+  margin-top: 6px;
+}
+#stable > div {
+  height: 100%;
+  width: 0%;
+  background: #6cff8f;
+}
+#stage {
+  height: calc(100vh - 130px);
+}
 </style>
 </head>
 <body>
 
 <div id="ui">
-  <button id="rec">🎤 哼唱</button>
-  <button id="stop">⏹ 完成</button>
-  <button id="play">🎻 开始拉琴</button>
-  <select id="style">
-    <option value="classic">古典</option>
-    <option value="indie">独立</option>
-    <option value="pop">流行</option>
-  </select>
-  <div id="info">未录制</div>
-  <div id="meter"><div id="stable"></div></div>
+  <button id="startRec">🎤 开始哼唱</button>
+  <button id="stopRec">⏹ 停止</button>
+  <button id="play">🎻 自动拉琴</button>
+  <div id="note">—</div>
+  <div id="stable"><div></div></div>
 </div>
 
 <div id="stage"></div>
 
+<!-- Three.js -->
 <script src="https://unpkg.com/three@0.155.0/build/three.min.js"></script>
+
 <script>
-/* ===== 工具 ===== */
-const noteNames=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-const noteFreq=n=>440*Math.pow(2,(n-69)/12);
-const freqToNote=f=>{
-  const n=Math.round(12*Math.log2(f/440)+69);
-  return {name:noteNames[n%12],n};
-};
-
-/* ===== 音高检测 ===== */
-function autoCorrelate(buf,sr){
-  let rms=0;
-  for(let i=0;i<buf.length;i++)rms+=buf[i]*buf[i];
-  if(Math.sqrt(rms/buf.length)<0.01)return-1;
-  let c=new Array(buf.length).fill(0);
-  for(let i=0;i<buf.length;i++)
-    for(let j=0;j<buf.length-i;j++)
-      c[i]+=buf[j]*buf[j+i];
-  let d=0;while(c[d]>c[d+1])d++;
-  let max=d;
-  for(let i=d;i<buf.length;i++)if(c[i]>c[max])max=i;
-  return sr/max;
+/* ================== 工具 ================== */
+const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+function freqToNote(freq) {
+  const n = Math.round(12 * Math.log2(freq / 440) + 69);
+  return { name: NOTE_NAMES[n % 12], midi: n };
+}
+function midiToFreq(n) {
+  return 440 * Math.pow(2, (n - 69) / 12);
 }
 
-/* ===== 录音 ===== */
-let ctx,analyser,data,recording=false;
-let melody=[],cur=null,hold=0;
+/* ================== 音高检测 ================== */
+function autoCorrelate(buf, sr) {
+  let rms = 0;
+  for (let i = 0; i < buf.length; i++) rms += buf[i] * buf[i];
+  if (Math.sqrt(rms / buf.length) < 0.01) return -1;
 
-rec.onclick=async()=>{
-  melody=[];cur=null;hold=0;
-  ctx=new AudioContext();await ctx.resume();
-  const s=await navigator.mediaDevices.getUserMedia({audio:true});
-  analyser=ctx.createAnalyser();analyser.fftSize=2048;
-  data=new Float32Array(analyser.fftSize);
-  ctx.createMediaStreamSource(s).connect(analyser);
-  recording=true;info.textContent="正在定音…";
-  loop();
-};
-
-stop.onclick=()=>{
-  recording=false;
-  info.textContent="定音完成："+melody.map(m=>m.name).join(" ");
-};
-
-function loop(){
-  if(!recording)return;
-  analyser.getFloatTimeDomainData(data);
-  const f=autoCorrelate(data,ctx.sampleRate);
-  if(f>80&&f<1200){
-    const {name,n}=freqToNote(f);
-    if(!cur||cur.name!==name){
-      hold=0;cur={name,n};
-    }else{
-      hold++;
-      stable.style.width=Math.min(100,hold*5)+"%";
-      if(hold===10)melody.push(cur);
+  let c = new Array(buf.length).fill(0);
+  for (let i = 0; i < buf.length; i++) {
+    for (let j = 0; j < buf.length - i; j++) {
+      c[i] += buf[j] * buf[j + i];
     }
-    info.textContent=`${name}`;
   }
-  requestAnimationFrame(loop);
+  let d = 0;
+  while (c[d] > c[d + 1]) d++;
+  let max = d;
+  for (let i = d; i < buf.length; i++) {
+    if (c[i] > c[max]) max = i;
+  }
+  return sr / max;
 }
 
-/* ===== 音频（真实感混合建模） ===== */
-const actx=new AudioContext();
-const osc1=actx.createOscillator();
-const osc2=actx.createOscillator();
-const noise=actx.createBufferSource();
-const gain=actx.createGain();
-const filter=actx.createBiquadFilter();
+/* ================== 录音逻辑 ================== */
+let audioCtx, analyser, data;
+let recording = false;
+let melody = [];
+let current = null;
+let stableCount = 0;
 
-osc1.type="sawtooth";
-osc2.type="triangle";
-filter.type="bandpass";
+const noteDiv = document.getElementById("note");
+const stableBar = document.querySelector("#stable div");
 
-const nb=actx.createBuffer(1,actx.sampleRate,actx.sampleRate);
-const d=nb.getChannelData(0);
-for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;
-noise.buffer=nb;noise.loop=true;
+startRec.onclick = async () => {
+  melody = [];
+  current = null;
+  stableCount = 0;
+  stableBar.style.width = "0%";
 
-osc1.connect(filter);
-osc2.connect(filter);
-noise.connect(filter);
-filter.connect(gain).connect(actx.destination);
-osc1.start();osc2.start();noise.start();
-gain.gain.value=0;
+  audioCtx = new AudioContext();
+  await audioCtx.resume();
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  data = new Float32Array(analyser.fftSize);
+  audioCtx.createMediaStreamSource(stream).connect(analyser);
 
-/* ===== 风格 ===== */
-function applyStyle(s){
-  if(s==="classic"){filter.Q.value=3;gain.gain.value=.3}
-  if(s==="indie"){filter.Q.value=1.5;gain.gain.value=.4}
-  if(s==="pop"){filter.Q.value=5;gain.gain.value=.35}
-}
-
-/* ===== 3D 小提琴 ===== */
-const scene=new THREE.Scene();
-scene.background=new THREE.Color(0x0c0c0c);
-const cam=new THREE.PerspectiveCamera(45,innerWidth/innerHeight,.1,100);
-cam.position.set(0,2,6);
-const r=new THREE.WebGLRenderer({antialias:true});
-r.setSize(innerWidth,innerHeight);
-stage.appendChild(r.domElement);
-scene.add(new THREE.AmbientLight(0xffffff,.4));
-const dl=new THREE.DirectionalLight(0xffffff,.8);
-dl.position.set(5,5,5);scene.add(dl);
-
-const violin=new THREE.Group();scene.add(violin);
-const body=new THREE.Mesh(
-  new THREE.CylinderGeometry(.6,.7,3,32),
-  new THREE.MeshStandardMaterial({color:0x5a2a12})
-);
-body.rotation.z=Math.PI/2;violin.add(body);
-
-const bow=new THREE.Mesh(
-  new THREE.BoxGeometry(4,.05,.05),
-  new THREE.MeshStandardMaterial({color:0xdddddd})
-);
-bow.position.z=.5;scene.add(bow);
-
-/* ===== 播放 ===== */
-let idx=0,t0=0,playing=false;
-play.onclick=async()=>{
-  if(!melody.length)return alert("没有旋律");
-  await actx.resume();
-  applyStyle(style.value);
-  idx=0;t0=performance.now();
-  playing=true;
+  recording = true;
+  detect();
 };
 
-function animate(t){
-  requestAnimationFrame(animate);
-  if(playing){
-    bow.position.x=Math.sin(t*0.003)*1.5;
-    const n=melody[idx];
-    osc1.frequency.setTargetAtTime(noteFreq(n.n),actx.currentTime,.03);
-    osc2.frequency.setTargetAtTime(noteFreq(n.n)*2,actx.currentTime,.03);
-    gain.gain.setTargetAtTime(.35,actx.currentTime,.05);
-    if(t-t0>600){idx++;t0=t;if(idx>=melody.length){playing=false;gain.gain.value=0}}
+stopRec.onclick = () => {
+  recording = false;
+  noteDiv.textContent = "完成：" + melody.map(n => n.name).join(" ");
+};
+
+function detect() {
+  if (!recording) return;
+  analyser.getFloatTimeDomainData(data);
+  const freq = autoCorrelate(data, audioCtx.sampleRate);
+
+  if (freq > 80 && freq < 1200) {
+    const n = freqToNote(freq);
+    noteDiv.textContent = n.name;
+
+    if (!current || current.name !== n.name) {
+      current = n;
+      stableCount = 0;
+    } else {
+      stableCount++;
+      stableBar.style.width = Math.min(stableCount * 10, 100) + "%";
+      if (stableCount === 8) melody.push(n);
+    }
   }
-  r.render(scene,cam);
+  requestAnimationFrame(detect);
+}
+
+/* ================== 小提琴音色（稳定版） ================== */
+const actx = new AudioContext();
+const osc = actx.createOscillator();
+const filter = actx.createBiquadFilter();
+const gain = actx.createGain();
+
+osc.type = "sawtooth";
+filter.type = "lowpass";
+filter.frequency.value = 3000;
+gain.gain.value = 0;
+
+osc.connect(filter).connect(gain).connect(actx.destination);
+osc.start();
+
+/* ================== Three.js 3D 小提琴 ================== */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0b0b);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(0, 2, 6);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+stage.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+const light = new THREE.DirectionalLight(0xffffff, 0.8);
+light.position.set(5, 5, 5);
+scene.add(light);
+
+const violin = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.6, 0.7, 3, 32),
+  new THREE.MeshStandardMaterial({ color: 0x6a3a1a })
+);
+violin.rotation.z = Math.PI / 2;
+scene.add(violin);
+
+/* ================== 自动拉琴 ================== */
+let playIndex = 0;
+let playTime = 0;
+let playing = false;
+
+play.onclick = async () => {
+  if (!melody.length) return alert("没有旋律");
+  await actx.resume();
+  playIndex = 0;
+  playTime = performance.now();
+  playing = true;
+};
+
+function animate(t) {
+  requestAnimationFrame(animate);
+
+  if (playing) {
+    const n = melody[playIndex];
+    osc.frequency.setTargetAtTime(midiToFreq(n.midi), actx.currentTime, 0.03);
+    gain.gain.setTargetAtTime(0.3, actx.currentTime, 0.05);
+
+    if (t - playTime > 600) {
+      playIndex++;
+      playTime = t;
+      if (playIndex >= melody.length) {
+        gain.gain.value = 0;
+        playing = false;
+      }
+    }
+  }
+  renderer.render(scene, camera);
 }
 animate();
 </script>
