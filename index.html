@@ -3,29 +3,26 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>哼唱旋律回放</title>
+<title>哼唱旋律 → 小提琴回放</title>
 <style>
 body {
   font-family: system-ui, sans-serif;
   padding: 24px;
 }
 button {
-  margin-right: 10px;
   padding: 8px 14px;
+  margin-right: 8px;
 }
 #current {
-  font-size: 22px;
+  font-size: 20px;
   margin: 12px 0;
-}
-#melody {
-  margin-top: 16px;
 }
 .note {
   display: inline-block;
   padding: 4px 6px;
   margin: 2px;
-  border-radius: 4px;
   background: #e5e7eb;
+  border-radius: 4px;
 }
 </style>
 </head>
@@ -33,9 +30,9 @@ button {
 
 <button id="start">开始录制</button>
 <button id="stop">停止</button>
-<button id="play">▶ 播放旋律</button>
+<button id="play">▶ 回放旋律</button>
 
-<div id="current">当前音符：-</div>
+<div id="current">当前频率：-</div>
 <div id="melody"></div>
 
 <script>
@@ -43,10 +40,11 @@ let audioCtx, analyser, data;
 let recording = false;
 
 let melody = [];
-let currentNote = null;
-let noteStartTime = 0;
-const STABLE_TIME = 150;
+let currentFreq = null;
+let freqStartTime = 0;
+const STABLE_TIME = 120;
 
+// === 音高检测（自相关）===
 function autoCorrelate(buf, sampleRate) {
   let SIZE = buf.length;
   let rms = 0;
@@ -70,50 +68,45 @@ function autoCorrelate(buf, sampleRate) {
   return sampleRate / maxpos;
 }
 
-function noteFromPitch(freq) {
-  const A4 = 440;
-  const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-  const n = Math.round(12 * Math.log2(freq / A4)) + 69;
-  return names[n % 12];
-}
-
-function freqFromNote(note) {
-  const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-  const n = names.indexOf(note);
-  return 440 * Math.pow(2, (n - 9) / 12);
-}
-
+// === 更新检测 ===
 function update() {
   if (!recording) return;
 
   analyser.getFloatTimeDomainData(data);
   const freq = autoCorrelate(data, audioCtx.sampleRate);
 
-  if (freq !== -1) {
-    const note = noteFromPitch(freq);
-    document.getElementById("current").textContent = `当前音符：${note}`;
+  if (freq > 60 && freq < 1200) {
+    document.getElementById("current").textContent =
+      `当前频率：${freq.toFixed(1)} Hz`;
 
     const now = performance.now();
-    if (note !== currentNote) {
-      if (currentNote && now - noteStartTime >= STABLE_TIME) {
-        melody.push({ note: currentNote, duration: now - noteStartTime });
-        renderMelody();
+    if (
+      !currentFreq ||
+      Math.abs(freq - currentFreq) / currentFreq > 0.05
+    ) {
+      if (currentFreq && now - freqStartTime > STABLE_TIME) {
+        melody.push({
+          freq: currentFreq,
+          duration: now - freqStartTime
+        });
+        render();
       }
-      currentNote = note;
-      noteStartTime = now;
+      currentFreq = freq;
+      freqStartTime = now;
     }
   }
   requestAnimationFrame(update);
 }
 
-function renderMelody() {
+function render() {
   document.getElementById("melody").innerHTML =
-    melody.map(n => `<span class="note">${n.note}</span>`).join("");
+    melody.map(n => `<span class="note">${n.freq.toFixed(0)}Hz</span>`).join("");
 }
 
+// === 按钮逻辑 ===
 document.getElementById("start").onclick = async () => {
   melody = [];
-  currentNote = null;
+  currentFreq = null;
   recording = true;
   document.getElementById("melody").innerHTML = "";
 
@@ -134,9 +127,12 @@ document.getElementById("start").onclick = async () => {
 document.getElementById("stop").onclick = () => {
   recording = false;
   const now = performance.now();
-  if (currentNote) {
-    melody.push({ note: currentNote, duration: now - noteStartTime });
-    renderMelody();
+  if (currentFreq) {
+    melody.push({
+      freq: currentFreq,
+      duration: now - freqStartTime
+    });
+    render();
   }
 };
 
@@ -147,6 +143,7 @@ document.getElementById("play").onclick = async () => {
   await ctx.resume();
 
   let t = ctx.currentTime;
+  let lastFreq = melody[0].freq;
 
   melody.forEach(n => {
     const osc = ctx.createOscillator();
@@ -154,20 +151,25 @@ document.getElementById("play").onclick = async () => {
     const filter = ctx.createBiquadFilter();
 
     osc.type = "sawtooth";
-    osc.frequency.value = freqFromNote(n.note);
+    osc.frequency.setValueAtTime(lastFreq, t);
+    osc.frequency.linearRampToValueAtTime(n.freq, t + 0.05);
 
     filter.type = "lowpass";
-    filter.frequency.value = 1800;
+    filter.frequency.value = 2000;
 
     gain.gain.setValueAtTime(0, t);
-    gain.gain.linearRampToValueAtTime(0.6, t + 0.03);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + n.duration / 1000);
+    gain.gain.linearRampToValueAtTime(0.7, t + 0.03);
+    gain.gain.exponentialRampToValueAtTime(
+      0.001,
+      t + n.duration / 1000
+    );
 
     osc.connect(filter).connect(gain).connect(ctx.destination);
 
     osc.start(t);
     osc.stop(t + n.duration / 1000);
 
+    lastFreq = n.freq;
     t += n.duration / 1000;
   });
 };
