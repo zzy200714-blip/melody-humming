@@ -3,18 +3,18 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>哼唱旋律 → 小提琴回放（Vibrato）</title>
+<title>哼唱旋律 → 拉小提琴</title>
 <style>
 body {
   font-family: system-ui, sans-serif;
-  padding: 24px;
+  padding: 20px;
 }
 button {
   padding: 8px 14px;
   margin-right: 8px;
 }
 #current {
-  font-size: 22px;
+  font-size: 20px;
   margin: 12px 0;
 }
 .note {
@@ -24,174 +24,159 @@ button {
   background: #e5e7eb;
   border-radius: 4px;
 }
+#hint {
+  margin-top: 12px;
+  opacity: 0.7;
+}
 </style>
 </head>
 <body>
 
-<button id="start">开始录制</button>
-<button id="stop">停止</button>
-<button id="play">▶ 回放旋律</button>
+<button id="record">🎤 开始录制旋律</button>
+<button id="stop">⏹ 停止录制</button>
+<button id="play">🎻 进入拉琴模式</button>
 
 <div id="current">当前音调：-</div>
 <div id="melody"></div>
+<div id="hint">提示：进入拉琴模式后，左右移动鼠标 = 拉弓</div>
 
 <script>
-let audioCtx, analyser, data;
-let recording = false;
-
-let melody = [];
-let currentFreq = null;
-let freqStartTime = 0;
-const STABLE_TIME = 120;
-
-// === Hz → 音名 + cents ===
+/* ---------- 工具函数 ---------- */
 function freqToNoteInfo(freq) {
   const A4 = 440;
-  const noteNames = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-  const noteNumber = 12 * Math.log2(freq / A4) + 69;
-  const rounded = Math.round(noteNumber);
-  return {
-    note: noteNames[rounded % 12],
-    cents: Math.round((noteNumber - rounded) * 100)
-  };
+  const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const n = 12 * Math.log2(freq / A4) + 69;
+  const r = Math.round(n);
+  return { note: names[r % 12], cents: Math.round((n - r) * 100) };
 }
 
-// === 自相关音高检测 ===
 function autoCorrelate(buf, sampleRate) {
-  let SIZE = buf.length;
-  let rms = 0;
+  let SIZE = buf.length, rms = 0;
   for (let i = 0; i < SIZE; i++) rms += buf[i] * buf[i];
   rms = Math.sqrt(rms / SIZE);
   if (rms < 0.01) return -1;
-
   let c = new Array(SIZE).fill(0);
-  for (let i = 0; i < SIZE; i++) {
-    for (let j = 0; j < SIZE - i; j++) {
+  for (let i = 0; i < SIZE; i++)
+    for (let j = 0; j < SIZE - i; j++)
       c[i] += buf[j] * buf[j + i];
-    }
-  }
-
   let d = 0;
   while (c[d] > c[d + 1]) d++;
-  let maxpos = d;
-  for (let i = d; i < SIZE; i++) {
-    if (c[i] > c[maxpos]) maxpos = i;
-  }
-  return sampleRate / maxpos;
+  let max = d;
+  for (let i = d; i < SIZE; i++) if (c[i] > c[max]) max = i;
+  return sampleRate / max;
 }
 
-// === 检测更新 ===
-function update() {
-  if (!recording) return;
+/* ---------- 旋律录制 ---------- */
+let audioCtx, analyser, data;
+let melody = [];
+let recording = false;
+let currentFreq = null;
+let startTime = 0;
 
+function updatePitch() {
+  if (!recording) return;
   analyser.getFloatTimeDomainData(data);
   const freq = autoCorrelate(data, audioCtx.sampleRate);
-
   if (freq > 60 && freq < 1200) {
     const info = freqToNoteInfo(freq);
     document.getElementById("current").textContent =
-      `当前音调：${info.note}${info.cents ? (info.cents > 0 ? " +" : " ") + info.cents + "¢" : ""}`;
-
+      `当前音调：${info.note}${info.cents ? " " + info.cents + "¢" : ""}`;
     const now = performance.now();
     if (!currentFreq || Math.abs(freq - currentFreq) / currentFreq > 0.05) {
-      if (currentFreq && now - freqStartTime > STABLE_TIME) {
-        melody.push({ freq: currentFreq, duration: now - freqStartTime });
-        render();
-      }
+      if (currentFreq) melody.push({ freq: currentFreq, dur: now - startTime });
       currentFreq = freq;
-      freqStartTime = now;
+      startTime = now;
+      renderMelody();
     }
   }
-  requestAnimationFrame(update);
+  requestAnimationFrame(updatePitch);
 }
 
-function render() {
+function renderMelody() {
   document.getElementById("melody").innerHTML =
     melody.map(n => {
       const i = freqToNoteInfo(n.freq);
-      return `<span class="note">${i.note}${i.cents ? (i.cents > 0 ? " +" : " ") + i.cents + "¢" : ""}</span>`;
+      return `<span class="note">${i.note}</span>`;
     }).join("");
 }
 
-// === 按钮 ===
-document.getElementById("start").onclick = async () => {
+document.getElementById("record").onclick = async () => {
   melody = [];
-  currentFreq = null;
   recording = true;
-  document.getElementById("melody").innerHTML = "";
-
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  audioCtx = new AudioContext();
   await audioCtx.resume();
-
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  const source = audioCtx.createMediaStreamSource(stream);
-
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = 2048;
   data = new Float32Array(analyser.fftSize);
-
-  source.connect(analyser);
-  update();
+  audioCtx.createMediaStreamSource(stream).connect(analyser);
+  updatePitch();
 };
 
 document.getElementById("stop").onclick = () => {
   recording = false;
-  const now = performance.now();
-  if (currentFreq) {
-    melody.push({ freq: currentFreq, duration: now - freqStartTime });
-    render();
-  }
+  if (currentFreq)
+    melody.push({ freq: currentFreq, dur: performance.now() - startTime });
+  renderMelody();
 };
+
+/* ---------- 拉小提琴回放 ---------- */
+let violinCtx, osc, gain, filter, lfo, lfoGain;
+let playIndex = 0;
+let noteStart = 0;
+let lastX = null, lastTime = null;
 
 document.getElementById("play").onclick = async () => {
-  if (melody.length === 0) return;
-
-  const ctx = new (window.AudioContext || window.webkitAudioContext)();
-  await ctx.resume();
-
-  let t = ctx.currentTime;
-  let lastFreq = melody[0].freq;
-
-  melody.forEach(n => {
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const filter = ctx.createBiquadFilter();
-
-    // === Vibrato LFO ===
-    const lfo = ctx.createOscillator();
-    const lfoGain = ctx.createGain();
-
-    lfo.frequency.value = 5.5;      // vibrato 速度
-    lfoGain.gain.value = n.freq * 0.012; // ≈ ±20 cents
-
-    lfo.connect(lfoGain).connect(osc.frequency);
-
-    osc.type = "sawtooth";
-    osc.frequency.setValueAtTime(lastFreq, t);
-    osc.frequency.linearRampToValueAtTime(n.freq, t + 0.05);
-
-    filter.type = "lowpass";
-    filter.frequency.value = 2000;
-
-    gain.gain.setValueAtTime(0, t);
-    gain.gain.linearRampToValueAtTime(0.7, t + 0.03);
-    gain.gain.exponentialRampToValueAtTime(
-      0.001,
-      t + n.duration / 1000
-    );
-
-    osc.connect(filter).connect(gain).connect(ctx.destination);
-
-    osc.start(t);
-    lfo.start(t);
-
-    osc.stop(t + n.duration / 1000);
-    lfo.stop(t + n.duration / 1000);
-
-    lastFreq = n.freq;
-    t += n.duration / 1000;
-  });
+  if (!melody.length) return alert("请先哼唱一段旋律");
+  violinCtx = new AudioContext();
+  await violinCtx.resume();
+  playIndex = 0;
+  noteStart = performance.now();
 };
+
+document.addEventListener("mousemove", e => {
+  if (!violinCtx || playIndex >= melody.length) return;
+  const now = performance.now();
+  if (!lastTime) { lastTime = now; lastX = e.clientX; return; }
+  const speed = Math.abs(e.clientX - lastX) / (now - lastTime);
+  lastX = e.clientX;
+  lastTime = now;
+
+  if (speed > 0.15) {
+    if (!osc) {
+      osc = violinCtx.createOscillator();
+      gain = violinCtx.createGain();
+      filter = violinCtx.createBiquadFilter();
+      lfo = violinCtx.createOscillator();
+      lfoGain = violinCtx.createGain();
+
+      osc.type = "sawtooth";
+      filter.type = "bandpass";
+      filter.frequency.value = 1200;
+
+      lfo.frequency.value = 5.5;
+      lfoGain.gain.value = melody[playIndex].freq * 0.01;
+      lfo.connect(lfoGain).connect(osc.frequency);
+
+      osc.connect(filter).connect(gain).connect(violinCtx.destination);
+      gain.gain.value = 0;
+
+      osc.start();
+      lfo.start();
+    }
+
+    const note = melody[playIndex];
+    osc.frequency.setTargetAtTime(note.freq, violinCtx.currentTime, 0.03);
+    gain.gain.setTargetAtTime(Math.min(speed, 0.8), violinCtx.currentTime, 0.02);
+
+    if (now - noteStart > note.dur) {
+      playIndex++;
+      noteStart = now;
+    }
+  } else if (osc) {
+    gain.gain.setTargetAtTime(0, violinCtx.currentTime, 0.05);
+  }
+});
 </script>
 
 </body>
