@@ -16,3 +16,47 @@ document.getElementById("btn").onclick = function () {
 
 </body>
 </html>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>麦克风启动测试</title>
+<style>
+body {
+  font-family: system-ui, sans-serif;
+  padding: 40px;
+}
+button {
+  padding: 10px 16px;
+  font-size: 16px;
+}
+</style>
+</head>
+
+<body>
+
+<button id="start">启动麦克风</button>
+<p id="status">等待启动</p>
+
+<script>
+const statusEl = document.getElementById("status");
+
+document.getElementById("start").onclick = async function () {
+  alert("按钮点击成功");
+
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    await ctx.resume();
+
+    await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    statusEl.textContent = "🎤 麦克风已成功启动";
+  } catch (e) {
+    statusEl.textContent = "❌ 启动失败：" + e.message;
+    console.error(e);
+  }
+};
+</script>
+
+</body>
+</html>
