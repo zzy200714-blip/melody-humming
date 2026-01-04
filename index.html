@@ -2,31 +2,102 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>麦克风权限测试</title>
+<title>音高检测</title>
+<style>
+body {
+  font-family: system-ui, sans-serif;
+  padding: 32px;
+}
+#pitch {
+  font-size: 24px;
+  margin-top: 20px;
+}
+</style>
 </head>
 <body>
 
-<button id="start">点我请求麦克风</button>
-<p id="status">等待点击</p>
+<button id="start">启动音高检测</button>
+<div id="pitch">等待声音...</div>
 
 <script>
-document.getElementById("start").addEventListener("click", async () => {
-  const status = document.getElementById("status");
-  status.textContent = "正在请求权限...";
+let audioCtx, analyser, data;
 
-  try {
-    // ⚠️ 直接请求，不创建 AudioContext
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-    status.textContent = "🎤 权限已获取";
-    console.log(stream);
-  } catch (err) {
-    status.textContent = "❌ 被拒绝：" + err.name;
-    console.error(err);
+function autoCorrelate(buf, sampleRate) {
+  let SIZE = buf.length;
+  let rms = 0;
+  for (let i = 0; i < SIZE; i++) {
+    let val = buf[i];
+    rms += val * val;
   }
-});
+  rms = Math.sqrt(rms / SIZE);
+  if (rms < 0.01) return -1;
+
+  let r1 = 0, r2 = SIZE - 1, threshold = 0.2;
+  for (let i = 0; i < SIZE / 2; i++) {
+    if (Math.abs(buf[i]) < threshold) { r1 = i; break; }
+  }
+  for (let i = 1; i < SIZE / 2; i++) {
+    if (Math.abs(buf[SIZE - i]) < threshold) { r2 = SIZE - i; break; }
+  }
+
+  buf = buf.slice(r1, r2);
+  SIZE = buf.length;
+
+  let c = new Array(SIZE).fill(0);
+  for (let i = 0; i < SIZE; i++) {
+    for (let j = 0; j < SIZE - i; j++) {
+      c[i] += buf[j] * buf[j + i];
+    }
+  }
+
+  let d = 0;
+  while (c[d] > c[d + 1]) d++;
+  let maxval = -1, maxpos = -1;
+  for (let i = d; i < SIZE; i++) {
+    if (c[i] > maxval) {
+      maxval = c[i];
+      maxpos = i;
+    }
+  }
+
+  let T0 = maxpos;
+  return sampleRate / T0;
+}
+
+function noteFromPitch(freq) {
+  const A4 = 440;
+  const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  let n = Math.round(12 * Math.log2(freq / A4)) + 69;
+  return noteNames[n % 12];
+}
+
+document.getElementById("start").onclick = async () => {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const source = audioCtx.createMediaStreamSource(stream);
+
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  data = new Float32Array(analyser.fftSize);
+
+  source.connect(analyser);
+
+  function update() {
+    analyser.getFloatTimeDomainData(data);
+    const freq = autoCorrelate(data, audioCtx.sampleRate);
+    const el = document.getElementById("pitch");
+
+    if (freq !== -1) {
+      el.textContent = `音高：${freq.toFixed(1)} Hz ｜ 音名：${noteFromPitch(freq)}`;
+    } else {
+      el.textContent = "未检测到稳定音高";
+    }
+    requestAnimationFrame(update);
+  }
+
+  update();
+};
 </script>
 
 </body>
 </html>
-
