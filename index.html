@@ -2,262 +2,178 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8" />
-<title>哼唱旋律 → 数字小提琴（完整版）</title>
+<meta charset="UTF-8">
+<title>3D 自动演奏小提琴</title>
 <style>
-body {
-  margin: 0;
-  background: #0e0e0e;
-  color: #eee;
-  font-family: system-ui, sans-serif;
-  user-select: none;
+body { margin: 0; background: #0b0b0b; color: #eee; overflow: hidden; }
+#ui {
+  position: absolute; top: 10px; left: 10px;
+  background: rgba(0,0,0,0.5);
+  padding: 10px; border-radius: 8px;
+  font-family: system-ui;
 }
-#top {
-  padding: 10px;
-}
-button {
-  margin-right: 8px;
-  padding: 6px 12px;
-}
-#status {
-  margin-left: 12px;
-}
-#stage {
-  height: calc(100vh - 60px);
-  display: flex;
-  justify-content: center;
-  align-items: center;
-}
-#violin {
-  position: relative;
-  width: 200px;
-  height: 520px;
-}
-.body {
-  position: absolute;
-  left: 30px;
-  top: 80px;
-  width: 140px;
-  height: 360px;
-  background: #5a2410;
-  border-radius: 70px;
-}
-.neck {
-  position: absolute;
-  left: 70px;
-  top: 0;
-  width: 60px;
-  height: 120px;
-  background: #2b1208;
-}
-.string {
-  position: absolute;
-  width: 3px;
-  top: 0;
-  bottom: 0;
-  background: #aaa;
-  opacity: 0.5;
-}
-.string.active {
-  background: #ffd27d;
-  opacity: 1;
-}
-#bow {
-  position: absolute;
-  width: 260px;
-  height: 6px;
-  background: #ccc;
-  left: -30px;
-  pointer-events: none;
-}
-#label {
-  margin-top: 6px;
-}
+button { margin-right: 6px; }
 </style>
 </head>
 <body>
 
-<div id="top">
-  <button id="rec">🎤 录旋律</button>
-  <button id="stop">⏹ 停止</button>
-  <button id="play">🎻 拉琴</button>
-  <span id="status">未开始</span>
-  <div id="label"></div>
+<div id="ui">
+  <button id="play">▶ 自动演奏</button>
+  <span id="info">未开始</span>
 </div>
 
-<div id="stage">
-  <div id="violin">
-    <div class="neck"></div>
-    <div class="body"></div>
-    <div class="string" data-i="0" style="left:88px"></div>
-    <div class="string" data-i="1" style="left:96px"></div>
-    <div class="string" data-i="2" style="left:104px"></div>
-    <div class="string" data-i="3" style="left:112px"></div>
-    <div id="bow"></div>
-  </div>
-</div>
+<script src="https://unpkg.com/three@0.155.0/build/three.min.js"></script>
 
 <script>
-/* ---------------- 音高检测 ---------------- */
-function autoCorrelate(buf, sr) {
-  let SIZE = buf.length, rms = 0;
-  for (let i = 0; i < SIZE; i++) rms += buf[i] * buf[i];
-  rms = Math.sqrt(rms / SIZE);
-  if (rms < 0.01) return -1;
-  let c = new Array(SIZE).fill(0);
-  for (let i = 0; i < SIZE; i++)
-    for (let j = 0; j < SIZE - i; j++)
-      c[i] += buf[j] * buf[j + i];
-  let d = 0;
-  while (c[d] > c[d + 1]) d++;
-  let max = d;
-  for (let i = d; i < SIZE; i++) if (c[i] > c[max]) max = i;
-  return sr / max;
-}
-
-function freqToNoteName(f) {
-  const noteNames = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-  const n = Math.round(12 * Math.log2(f / 440) + 69);
-  return noteNames[n % 12];
-}
-
-/* ---------------- 录旋律 ---------------- */
-let audioCtx, analyser, data;
-let melody = [];
-let recording = false;
-let curFreq = null;
-let t0 = 0;
-
-rec.onclick = async () => {
-  melody = [];
-  recording = true;
-  audioCtx = new AudioContext();
-  await audioCtx.resume();
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 2048;
-  data = new Float32Array(analyser.fftSize);
-  audioCtx.createMediaStreamSource(stream).connect(analyser);
-  status.textContent = "正在录旋律…";
-  loop();
-};
-
-stop.onclick = () => {
-  recording = false;
-  if (curFreq) melody.push({ f: curFreq, d: performance.now() - t0 });
-  status.textContent = "旋律已保存";
-};
-
-function loop() {
-  if (!recording) return;
-  analyser.getFloatTimeDomainData(data);
-  const f = autoCorrelate(data, audioCtx.sampleRate);
-  if (f > 60 && f < 1200) {
-    const now = performance.now();
-    if (!curFreq || Math.abs(f - curFreq) / curFreq > 0.05) {
-      if (curFreq) melody.push({ f: curFreq, d: now - t0 });
-      curFreq = f;
-      t0 = now;
-    }
-  }
-  requestAnimationFrame(loop);
-}
-
-/* ---------------- 拉琴系统 ---------------- */
-const strings = [
-  { name: "G", base: 196 },
-  { name: "D", base: 293.66 },
-  { name: "A", base: 440 },
-  { name: "E", base: 659.25 }
+/* ---------------- 旋律（示例：可替换成你录的） ---------------- */
+const melody = [
+  { f: 440, d: 600 },
+  { f: 493.88, d: 600 },
+  { f: 523.25, d: 800 },
+  { f: 587.33, d: 800 },
+  { f: 659.25, d: 1200 }
 ];
 
-let ctx, osc1, osc2, gain, filter, convolver;
-let idx = 0, noteStart = 0;
-let bowPressure = 0.4;
-let lastX = null, lastT = null;
-let currentString = 2;
+/* ---------------- 音频系统 ---------------- */
+let audioCtx, osc1, osc2, gain, filter;
 
-play.onclick = async () => {
-  if (!melody.length) return alert("先录旋律");
-  ctx = new AudioContext();
-  await ctx.resume();
-
-  osc1 = ctx.createOscillator();
-  osc2 = ctx.createOscillator();
-  gain = ctx.createGain();
-  filter = ctx.createBiquadFilter();
-  convolver = ctx.createConvolver();
+function startSound() {
+  audioCtx = new AudioContext();
+  osc1 = audioCtx.createOscillator();
+  osc2 = audioCtx.createOscillator();
+  gain = audioCtx.createGain();
+  filter = audioCtx.createBiquadFilter();
 
   osc1.type = "sawtooth";
   osc2.type = "triangle";
-
   filter.type = "bandpass";
   filter.frequency.value = 1200;
-  filter.Q.value = 2;
 
   gain.gain.value = 0;
 
   osc1.connect(filter);
   osc2.connect(filter);
   filter.connect(gain);
-  gain.connect(ctx.destination);
+  gain.connect(audioCtx.destination);
 
   osc1.start();
   osc2.start();
+}
 
-  idx = 0;
-  noteStart = performance.now();
-  status.textContent = "拉弓演奏中";
+let noteIndex = 0;
+let noteStart = 0;
+
+/* ---------------- Three.js 场景 ---------------- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0b0b);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(0, 2, 6);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+window.onresize = () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
 };
 
-document.addEventListener("wheel", e => {
-  bowPressure = Math.min(1, Math.max(0.05, bowPressure + (e.deltaY < 0 ? 0.05 : -0.05)));
-});
+/* 灯光 */
+scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+const light = new THREE.DirectionalLight(0xffffff, 0.8);
+light.position.set(5, 5, 5);
+scene.add(light);
 
-document.addEventListener("keydown", e => {
-  if (e.key >= "1" && e.key <= "4") currentString = e.key - 1;
-  if (e.code === "Space") gain.gain.setTargetAtTime(0, ctx.currentTime, 0.05);
-});
+/* ---------------- 小提琴模型（程序生成） ---------------- */
+const violin = new THREE.Group();
+scene.add(violin);
 
-document.addEventListener("mousemove", e => {
-  bow.style.top = e.clientY - 3 + "px";
-  if (!ctx || idx >= melody.length) return;
+/* 琴身 */
+const body = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.6, 0.7, 3, 32),
+  new THREE.MeshStandardMaterial({ color: 0x5a2a12 })
+);
+body.rotation.z = Math.PI / 2;
+violin.add(body);
 
-  const rect = violin.getBoundingClientRect();
-  if (e.clientX < rect.left || e.clientX > rect.right) return;
+/* 琴弦 */
+const strings = [];
+for (let i = 0; i < 4; i++) {
+  const s = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.01, 0.01, 4),
+    new THREE.MeshStandardMaterial({ color: 0xaaaaaa })
+  );
+  s.position.y = -0.15 + i * 0.1;
+  s.rotation.z = Math.PI / 2;
+  violin.add(s);
+  strings.push(s);
+}
 
-  const yRatio = (e.clientY - rect.top) / rect.height;
-  currentString = Math.min(3, Math.max(0, Math.floor(yRatio * 4)));
+/* 弓 */
+const bow = new THREE.Mesh(
+  new THREE.BoxGeometry(4.5, 0.05, 0.05),
+  new THREE.MeshStandardMaterial({ color: 0xdddddd })
+);
+bow.position.y = 0;
+bow.position.z = 0.4;
+scene.add(bow);
 
-  document.querySelectorAll(".string").forEach(s => s.classList.remove("active"));
-  document.querySelector(`.string[data-i="${currentString}"]`).classList.add("active");
+/* ---------------- 自动拉弓逻辑 ---------------- */
+let bowPhase = 0;
+let playing = false;
 
-  label.textContent =
-    `当前弦：${strings[currentString].name} ｜ 音名：${freqToNoteName(melody[idx].f)} ｜ 弓压：${bowPressure.toFixed(2)}`;
+function animate(t) {
+  requestAnimationFrame(animate);
 
-  const now = performance.now();
-  if (!lastT) { lastT = now; lastX = e.clientX; return; }
-  const speed = Math.abs(e.clientX - lastX) / (now - lastT);
-  lastX = e.clientX;
-  lastT = now;
+  if (playing) {
+    /* 弓往返 */
+    bowPhase += 0.02;
+    bow.position.x = Math.sin(bowPhase) * 1.5;
 
-  if (speed > 0.12) {
-    const n = melody[idx];
-    const targetFreq = n.f;
-    osc1.frequency.setTargetAtTime(targetFreq, ctx.currentTime, 0.03);
-    osc2.frequency.setTargetAtTime(targetFreq * 2, ctx.currentTime, 0.03);
+    /* 声音包络 */
+    gain.gain.setTargetAtTime(0.4 + Math.abs(Math.sin(bowPhase)) * 0.3,
+      audioCtx.currentTime, 0.05);
 
-    filter.frequency.setTargetAtTime(800 + bowPressure * 2000, ctx.currentTime, 0.05);
-    gain.gain.setTargetAtTime(Math.min(speed, 1) * bowPressure, ctx.currentTime, 0.03);
-
-    if (now - noteStart > n.d) {
-      idx++;
+    /* 当前音符 */
+    const now = performance.now();
+    if (now - noteStart > melody[noteIndex].d) {
+      noteIndex++;
       noteStart = now;
+      if (noteIndex >= melody.length) {
+        playing = false;
+        gain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.2);
+        info.textContent = "演奏结束";
+      }
     }
-  } else {
-    gain.gain.setTargetAtTime(0, ctx.currentTime, 0.08);
+
+    if (playing) {
+      const f = melody[noteIndex].f;
+      osc1.frequency.setTargetAtTime(f, audioCtx.currentTime, 0.03);
+      osc2.frequency.setTargetAtTime(f * 2, audioCtx.currentTime, 0.03);
+    }
+
+    /* 弦高亮 */
+    strings.forEach(s => s.material.emissive?.setHex?.(0x000000));
+    const si = noteIndex % 4;
+    strings[si].material.emissive = new THREE.Color(0xffaa55);
   }
-});
+
+  renderer.render(scene, camera);
+}
+
+/* ---------------- 控制 ---------------- */
+play.onclick = async () => {
+  if (!audioCtx) startSound();
+  await audioCtx.resume();
+  noteIndex = 0;
+  noteStart = performance.now();
+  playing = true;
+  info.textContent = "自动拉弓中…";
+};
+
+animate();
 </script>
 
 </body>
