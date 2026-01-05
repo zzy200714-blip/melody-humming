@@ -1,85 +1,55 @@
+
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>哼唱旋律 → 钢琴播放</title>
+<title>旋律播放示例</title>
 <style>
 body { background:#111; color:#eee; font-family:sans-serif; text-align:center; padding:50px;}
 button { padding:10px 20px; margin:10px; font-size:16px; cursor:pointer;}
-#status {margin-top:20px;}
 </style>
 </head>
 <body>
-<h1>哼唱旋律 → 钢琴播放</h1>
-<button id="startRecord">🎤 开始哼唱</button>
-<button id="stopRecord">⏹ 停止哼唱</button>
-<button id="play">▶ 播放钢琴</button>
-<div id="status">状态：等待录音</div>
+<h1>播放旋律 B A# F C C F# C# G G</h1>
+<button id="play">▶ 播放旋律</button>
 
 <script>
 const AudioContext = window.AudioContext || window.webkitAudioContext;
 const actx = new AudioContext();
 
-let recordedMelody = []; // 存储哼唱音符
-let isRecording = false;
-let mediaStream, mediaRecorder, audioChunks=[];
+// 旋律
+const melody = [
+  {note:"B4", duration:600},
+  {note:"A#4", duration:600},
+  {note:"F4", duration:600},
+  {note:"C4", duration:600},
+  {note:"C4", duration:600},
+  {note:"F#4", duration:600},
+  {note:"C#4", duration:600},
+  {note:"G4", duration:600},
+  {note:"G4", duration:600},
+];
 
-// 简单音高检测（使用 Web Audio API）
-async function startRecording(){
-  if(actx.state==="suspended") await actx.resume();
-  mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
-  mediaRecorder = new MediaRecorder(mediaStream);
-  audioChunks = [];
-  recordedMelody = [];
-  mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
-  mediaRecorder.start();
-
-  isRecording = true;
-  document.getElementById('status').textContent="状态：正在录音…";
-
-  const source = actx.createMediaStreamSource(mediaStream);
-  const analyser = actx.createAnalyser();
-  source.connect(analyser);
-  analyser.fftSize = 2048;
-  const dataArray = new Float32Array(analyser.fftSize);
-
-  function detectPitch(){
-    if(!isRecording) return;
-    analyser.getFloatTimeDomainData(dataArray);
-    let pitch = autoCorrelate(dataArray, actx.sampleRate);
-    if(pitch){
-      let note = freqToNote(pitch);
-      // 添加到旋律，简单防抖
-      if(recordedMelody.length==0 || recordedMelody[recordedMelody.length-1].note !== note){
-        recordedMelody.push({note:note,duration:500}); // 默认 0.5s
-        console.log("检测到音符:",note);
-      }
-    }
-    requestAnimationFrame(detectPitch);
-  }
-  detectPitch();
-}
-
-// 停止录音
-function stopRecording(){
-  isRecording=false;
-  mediaRecorder.stop();
-  mediaStream.getTracks().forEach(t=>t.stop());
-  document.getElementById('status').textContent="状态：录音结束，检测到音符 "+recordedMelody.map(n=>n.note).join(" ");
+// 音名转换为频率
+const noteMap = {C:0,C#:1,D:2,D#:3,E:4,F:5,F#:6,G:7,G#:8,A:9,A#:10,B:11};
+function noteToFreq(note){
+  let octave=parseInt(note.slice(-1));
+  let key=note.slice(0,-1);
+  return 440*Math.pow(2,(noteMap[key]+(octave-4)*12-9)/12);
 }
 
 // 播放旋律
 async function playMelody(){
-  for(let i=0;i<recordedMelody.length;i++){
-    const n = recordedMelody[i];
+  for(let i=0;i<melody.length;i++){
+    const n = melody[i];
     const osc = actx.createOscillator();
     const gain = actx.createGain();
-    osc.type='sine'; // 钢琴近似音色
+    osc.type='sine'; // 钢琴音色
     osc.frequency.value = noteToFreq(n.note);
 
     gain.gain.setValueAtTime(0,actx.currentTime);
-    gain.gain.linearRampToValueAtTime(0.3, actx.currentTime+0.01);
-    gain.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + n.duration/1000);
+    gain.gain.linearRampToValueAtTime(0.3,actx.currentTime+0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001,actx.currentTime+n.duration/1000);
 
     osc.connect(gain).connect(actx.destination);
     osc.start();
@@ -89,42 +59,7 @@ async function playMelody(){
   }
 }
 
-// 音符 ↔ 频率
-const noteMap = {C:0,C#:1,D:2,D#:3,E:4,F:5,F#:6,G:7,G#:8,A:9,A#:10,B:11};
-function noteToFreq(note){
-  let octave=parseInt(note.slice(-1));
-  let key = note.slice(0,-1);
-  return 440*Math.pow(2,(noteMap[key]+(octave-4)*12-9)/12);
-}
-function freqToNote(freq){
-  const noteNames = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-  let midi = Math.round(12*Math.log2(freq/440)+69);
-  let note = noteNames[midi%12]+Math.floor(midi/12);
-  return note;
-}
-
-// 自动相关法检测频率（简单版）
-function autoCorrelate(buf,sampleRate){
-  let SIZE = buf.length;
-  let rms = 0;
-  for(let i=0;i<SIZE;i++){rms+=buf[i]*buf[i];}
-  rms = Math.sqrt(rms/SIZE);
-  if(rms<0.01) return null; // 静音忽略
-
-  let r = new Array(SIZE).fill(0);
-  for(let t=0;t<SIZE;t++){
-    for(let i=0;i<SIZE-t;i++){r[t]+=buf[i]*buf[i+t];}
-  }
-  let d=0; while(r[d]>r[d+1] && d<SIZE) d++;
-  let maxval=-1, maxpos=-1;
-  for(let i=d;i<SIZE;i++){if(r[i]>maxval){maxval=r[i]; maxpos=i;}}
-  let T0 = maxpos;
-  return sampleRate/T0;
-}
-
-document.getElementById("startRecord").onclick=startRecording;
-document.getElementById("stopRecord").onclick=stopRecording;
-document.getElementById("play").onclick=async()=>{
+document.getElementById("play").onclick=async ()=>{
   if(actx.state==="suspended") await actx.resume();
   playMelody();
 };
