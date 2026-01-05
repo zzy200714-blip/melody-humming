@@ -368,17 +368,7 @@ function scheduleNote(freq, startTime, dur){
   });
 }
 
-  partials.forEach(p=>{
-    const o = audioCtx.createOscillator();
-    const g = audioCtx.createGain();
-    o.type = "sine";
-    o.frequency.setValueAtTime(freq * p.ratio, startTime);
-    g.gain.setValueAtTime(p.gain, startTime);
-    o.connect(g).connect(master);
-    o.start(startTime);
-    o.stop(startTime + dur + 0.05);
-  });
-}
+
 
 /* ======= 调性检测（大调 / 小调） ======= */
 const MAJOR = [0,2,4,5,7,9,11];
