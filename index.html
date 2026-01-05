@@ -304,27 +304,70 @@ async function playRecorded(){
 
 /* schedule one note at given startTime (s) with dur(s) */
 function scheduleNote(freq, startTime, dur){
-  // master gain envelope
-  const master = audioCtx.createGain();
-  master.connect(audioCtx.destination);
+  const ctx = audioCtx;
+
+  /* ===== 主音量包络 ===== */
+  const master = ctx.createGain();
   master.gain.setValueAtTime(0.0001, startTime);
-  master.gain.exponentialRampToValueAtTime(0.9, startTime + 0.01);
-  master.gain.exponentialRampToValueAtTime(0.0005, startTime + dur);
+  master.gain.exponentialRampToValueAtTime(1.0, startTime + 0.008);
+  master.gain.exponentialRampToValueAtTime(0.0005, startTime + dur + 0.4);
 
-  // filter to mellow timbre
-  const filter = audioCtx.createBiquadFilter();
-  filter.type = "lowpass";
-  filter.frequency.setValueAtTime(3000, startTime);
+  /* ===== 琴体滤波（随时间变暗） ===== */
+  const body = ctx.createBiquadFilter();
+  body.type = "lowpass";
+  body.frequency.setValueAtTime(5200, startTime);
+  body.frequency.exponentialRampToValueAtTime(1600, startTime + dur);
 
-  master.connect(filter);
-  filter.connect(audioCtx.destination);
+  body.connect(master);
+  master.connect(ctx.destination);
 
-  // three partials
-  const partials = [
-    {ratio:1.0, gain:1.0},
-    {ratio:2.0, gain:0.45},
-    {ratio:1.5, gain:0.32}
-  ];
+  /* ===== 琴槌瞬态（敲击噪声） ===== */
+  const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.03, ctx.sampleRate);
+  const data = noiseBuf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.exp(-i / 180);
+  }
+  const noise = ctx.createBufferSource();
+  const noiseGain = ctx.createGain();
+  noise.buffer = noiseBuf;
+  noiseGain.gain.setValueAtTime(0.35, startTime);
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.03);
+  noise.connect(noiseGain).connect(body);
+  noise.start(startTime);
+  noise.stop(startTime + 0.03);
+
+  /* ===== 三根弦（微失谐） ===== */
+  [
+    {detune:-6, gain:0.9},
+    {detune: 0, gain:1.0},
+    {detune:+6, gain:0.9}
+  ].forEach(s=>{
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(freq, startTime);
+    o.detune.setValueAtTime(s.detune, startTime);
+    g.gain.setValueAtTime(s.gain, startTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, startTime + dur + 0.5);
+    o.connect(g).connect(body);
+    o.start(startTime);
+    o.stop(startTime + dur + 0.6);
+  });
+
+  /* ===== 泛音（让声音亮但不刺） ===== */
+  [2,3,4].forEach((r,i)=>{
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(freq * r, startTime);
+    g.gain.setValueAtTime(0.18/(i+1), startTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.25);
+    o.connect(g).connect(body);
+    o.start(startTime);
+    o.stop(startTime + 0.3);
+  });
+}
+
   partials.forEach(p=>{
     const o = audioCtx.createOscillator();
     const g = audioCtx.createGain();
