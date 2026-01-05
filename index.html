@@ -2,67 +2,193 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<title>旋律播放示例</title>
+<meta charset="utf-8" />
+<title>播放并下载你的旋律（仿小提琴）</title>
 <style>
-body { background:#111; color:#eee; font-family:sans-serif; text-align:center; padding:50px;}
-button { padding:10px 20px; margin:10px; font-size:16px; cursor:pointer;}
+  body{background:#0b0b0b;color:#eee;font-family:system-ui;padding:24px}
+  button{padding:10px 14px;margin:6px;font-size:16px}
+  #notes{margin-top:12px}
 </style>
 </head>
 <body>
-<h1>播放旋律 B A# F C C F# C# G G</h1>
-<button id="play">▶ 播放旋律</button>
+  <h2>播放 / 下载：B A# F C C F# C# G G（仿小提琴）</h2>
+  <div>
+    <button id="play">▶ 播放</button>
+    <button id="download">⬇ 下载 WAV</button>
+    <span id="status"></span>
+  </div>
+  <div id="notes">旋律：B A# F C C F# C# G G</div>
 
 <script>
-const AudioContext = window.AudioContext || window.webkitAudioContext;
-const actx = new AudioContext();
+(async ()=>{
 
-// 旋律
-const melody = [
-  {note:"B4", duration:600},
-  {note:"A#4", duration:600},
-  {note:"F4", duration:600},
-  {note:"C4", duration:600},
-  {note:"C4", duration:600},
-  {note:"F#4", duration:600},
-  {note:"C#4", duration:600},
-  {note:"G4", duration:600},
-  {note:"G4", duration:600},
+const seq = [
+  {note:"B4", dur:600},
+  {note:"A#4", dur:600},
+  {note:"F4", dur:600},
+  {note:"C4", dur:600},
+  {note:"C4", dur:600},
+  {note:"F#4", dur:600},
+  {note:"C#4", dur:600},
+  {note:"G4", dur:600},
+  {note:"G4", dur:600},
 ];
 
-// 音名转换为频率
-const noteMap = {C:0,C#:1,D:2,D#:3,E:4,F:5,F#:6,G:7,G#:8,A:9,A#:10,B:11};
-function noteToFreq(note){
-  let octave=parseInt(note.slice(-1));
-  let key=note.slice(0,-1);
-  return 440*Math.pow(2,(noteMap[key]+(octave-4)*12-9)/12);
+function noteToFreq(name){
+  const map = {C:0,"C#":1,D:2,"D#":3,E:4,F:5,"F#":6,G:7,"G#":8,A:9,"A#":10,B:11};
+  const octave = parseInt(name.slice(-1));
+  const key = name.slice(0, name.length-1);
+  const n = map[key] + (octave * 12);
+  const midi = n; // but easier compute relative to A4
+  // compute frequency from midi number:
+  const midiNumber = Math.round(map[key] + (octave)*12);
+  // better compute precisely:
+  const midiIdx = (octave+1)*12 + map[key]; // C0 = MIDI 12 approximation
+  // Use standard formula from note name -> use A4 = MIDI 69
+  // compute semitone number relative to A4:
+  const semitone = Math.round(12*Math.log2(440/440)); // dummy
+  // simpler: compute midi number properly:
+  // compute midi from note: C0 = 12; MIDI = 12 + (octave * 12) + map[key]
+  const midiNum = 12 + octave * 12 + map[key];
+  return 440 * Math.pow(2, (midiNum - 69) / 12);
 }
 
-// 播放旋律
-async function playMelody(){
-  for(let i=0;i<melody.length;i++){
-    const n = melody[i];
-    const osc = actx.createOscillator();
-    const gain = actx.createGain();
-    osc.type='sine'; // 钢琴音色
-    osc.frequency.value = noteToFreq(n.note);
+// helper accurate note->freq:
+function noteToFreq2(name){
+  const map = {C:0,"C#":1,D:2,"D#":3,E:4,F:5,"F#":6,G:7,"G#":8,A:9,"A#":10,B:11};
+  const octave = parseInt(name.slice(-1));
+  const key = name.slice(0, name.length-1);
+  const midi = 12 + octave*12 + map[key];
+  return 440 * Math.pow(2, (midi - 69)/12);
+}
 
-    gain.gain.setValueAtTime(0,actx.currentTime);
-    gain.gain.linearRampToValueAtTime(0.3,actx.currentTime+0.01);
-    gain.gain.exponentialRampToValueAtTime(0.001,actx.currentTime+n.duration/1000);
+// create "violin-like" voice using two oscillators, filter, LFO vibrato and bow-noise
+async function createViolinContext(seqToPlay, record=false){
+  const actx = new (window.AudioContext || window.webkitAudioContext)();
+  await actx.resume();
 
-    osc.connect(gain).connect(actx.destination);
-    osc.start();
-    osc.stop(actx.currentTime+n.duration/1000+0.05);
+  // destination for playback
+  const dest = actx.destination;
 
-    await new Promise(r=>setTimeout(r,n.duration));
+  // if recording requested, create a MediaStreamDestination
+  let recorder, mediaStreamDest;
+  if(record){
+    mediaStreamDest = actx.createMediaStreamDestination();
+    // also forward to speakers
+    // we will connect final gain to both dest and mediaStreamDest
   }
+
+  const masterGain = actx.createGain();
+  masterGain.gain.value = 1;
+  masterGain.connect(dest);
+  if(mediaStreamDest) masterGain.connect(mediaStreamDest);
+
+  // create small function to play sequence
+  async function play(){
+    let t = actx.currentTime + 0.05;
+    for(const item of seqToPlay){
+      const f = noteToFreq2(item.note);
+
+      // oscillator + overtone + filter
+      const osc1 = actx.createOscillator();
+      const osc2 = actx.createOscillator();
+      const gain = actx.createGain();
+      const filter = actx.createBiquadFilter();
+
+      osc1.type = 'sawtooth';
+      osc2.type = 'triangle';
+      osc1.frequency.value = f;
+      osc2.frequency.value = f * 2.01;
+
+      // vibrato LFO
+      const lfo = actx.createOscillator();
+      const lfoGain = actx.createGain();
+      lfo.type = 'sine'; lfo.frequency.value = 5.4;
+      lfoGain.gain.value = f * 0.009; // ≈ ±9 cents
+
+      lfo.connect(lfoGain).connect(osc1.frequency);
+      lfo.connect(lfoGain).connect(osc2.frequency);
+
+      // bow noise (highpass filtered noise)
+      const noiseGain = actx.createGain();
+      const noise = actx.createBufferSource();
+      const buffer = actx.createBuffer(1, actx.sampleRate*1, actx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for(let i=0;i<data.length;i++) data[i]=(Math.random()*2-1)*0.2;
+      noise.buffer = buffer; noise.loop = true;
+      const hp = actx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=800;
+      noise.connect(hp).connect(noiseGain);
+      noiseGain.gain.value = 0.001;
+
+      // body filter
+      filter.type = "bandpass";
+      filter.frequency.value = f*2.5;
+      filter.Q.value = 1.5;
+
+      // envelope
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.linearRampToValueAtTime(0.6, t+0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0005, t + item.dur/1000);
+
+      // connect graph
+      osc1.connect(filter);
+      osc2.connect(filter);
+      noiseGain.connect(filter);
+      filter.connect(gain).connect(masterGain);
+
+      // start/stop
+      osc1.start(t); osc2.start(t);
+      lfo.start(t); noise.start(t);
+      osc1.stop(t + item.dur/1000 + 0.05);
+      osc2.stop(t + item.dur/1000 + 0.05);
+      lfo.stop(t + item.dur/1000 + 0.05);
+      noise.stop(t + item.dur/1000 + 0.05);
+
+      t += item.dur/1000;
+    }
+    // return a promise that resolves when playback done
+    return new Promise(res => setTimeout(res, seqToPlay.reduce((a,b)=>a+b.dur,0)));
+  }
+
+  // if recording, set up MediaRecorder
+  if(mediaStreamDest){
+    recorder = new MediaRecorder(mediaStreamDest.stream);
+  }
+  return { actx, play, recorder };
 }
 
-document.getElementById("play").onclick=async ()=>{
-  if(actx.state==="suspended") await actx.resume();
-  playMelody();
+// button handlers
+const playBtn = document.getElementById("play");
+const downloadBtn = document.getElementById("download");
+const statusSpan = document.getElementById("status");
+
+playBtn.onclick = async ()=>{
+  statusSpan.textContent = "播放中…";
+  const ctxObj = await createViolinContext(seq, false);
+  await ctxObj.play();
+  statusSpan.textContent = "播放结束";
 };
+
+// download: record playback and create WAV blob
+downloadBtn.onclick = async ()=>{
+  statusSpan.textContent = "生成下载中…";
+  const ctxObj = await createViolinContext(seq, true);
+  const recorder = ctxObj.recorder;
+  const chunks = [];
+  recorder.ondataavailable = e => chunks.push(e.data);
+  recorder.start();
+  await ctxObj.play();
+  recorder.stop();
+  await new Promise(r=>recorder.onstop=r);
+  const blob = new Blob(chunks, {type: 'audio/webm'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'melody_violin.webm';
+  document.body.appendChild(a); a.click(); a.remove();
+  statusSpan.textContent = "已生成下载（melody_violin.webm）";
+};
+
+})();  
 </script>
 </body>
 </html>
