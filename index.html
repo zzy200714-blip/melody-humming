@@ -1,224 +1,202 @@
-
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>哼唱→钢琴演奏（干净版）</title>
+<title>哼唱 → 钢琴旋律（最终稳定版）</title>
 <style>
 body{background:#111;color:#eee;font-family:sans-serif;text-align:center;padding:30px;}
 button{padding:10px 18px;margin:5px;font-size:16px;cursor:pointer;}
-#info{margin-top:20px;font-size:18px;}
-.note{display:inline-block;padding:5px 10px;margin:3px;border-radius:4px;background:#333;}
-.note.active{background:#f90;color:#000;font-weight:bold;}
 #status{margin-top:10px;font-size:18px;color:#ff0;}
+.note{display:inline-block;padding:5px 10px;margin:3px;border-radius:4px;background:#333;}
 </style>
 </head>
 <body>
-<h1>哼唱→钢琴演奏（干净版）</h1>
-<button id="start">🎤 开始录音</button>
-<button id="stop">⏹ 停止录音</button>
-<button id="play">▶ 回放钢琴</button>
 
-<div id="status">准备中…</div>
+<h1>🎤 哼唱 → 🎹 钢琴旋律</h1>
 
-<div id="info">
-  <div>检测音符: <span id="currentNote">-</span></div>
-  <div>当前音节: <span id="currentPitchClass">-</span></div>
-  <div>推测调式: <span id="currentScale">-</span></div>
-  <div>推测和弦: <span id="currentChord">-</span></div>
+<button id="start">开始录音</button>
+<button id="stop">停止</button>
+<button id="play">回放钢琴</button>
+
+<div id="status">准备中</div>
+
+<div>
+  当前音符：<span id="currentNote">-</span><br>
+  调式：<span id="currentScale">-</span><br>
+  和弦：<span id="currentChord">-</span>
 </div>
-<div id="melodyDisplay"></div>
+
+<div id="melody"></div>
 
 <script>
 const AudioContext = window.AudioContext || window.webkitAudioContext;
-const actx = new AudioContext();
+const ctx = new AudioContext();
 
-let recordedMelody=[], isRecording=false, mediaStream, mediaRecorder, audioChunks=[];
 const noteNames=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-let minRMS = 0.03; // 声音阈值，低于此忽略
+let isRecording=false, stream;
+let recordedMelody=[];
 
-function noteToFreq(note){
-  const map={C:0,"C#":1,D:2,"D#":3,E:4,F:5,"F#":6,G:7,"G#":8,A:9,"A#":10,B:11};
-  let octave=parseInt(note.slice(-1));
-  let key=note.slice(0,-1);
-  let midi = 12 + octave*12 + map[key];
-  return 440 * Math.pow(2,(midi-69)/12);
-}
+// ====== 稳定判定参数 ======
+const MIN_RMS = 0.03;
+const STABLE_FRAMES = 5;
+const MIN_NOTE_MS = 200;
 
-// 改进自相关音高检测 + 阈值
-function autoCorrelate(buf,sampleRate){
-  let SIZE=buf.length;
+let lastNote=null;
+let stableCount=0;
+let lastNoteTime=0;
+
+// ====== 音高检测 ======
+function autoCorrelate(buf,sr){
   let rms=0;
-  for(let i=0;i<SIZE;i++) rms+=buf[i]*buf[i];
-  rms=Math.sqrt(rms/SIZE);
-  if(rms<minRMS) return null;
+  for(let i=0;i<buf.length;i++) rms+=buf[i]*buf[i];
+  rms=Math.sqrt(rms/buf.length);
+  if(rms<MIN_RMS) return null;
 
-  let r=new Array(SIZE).fill(0);
-  for(let t=0;t<SIZE;t++)
-    for(let i=0;i<SIZE-t;i++)
+  let r=new Array(buf.length).fill(0);
+  for(let t=0;t<buf.length;t++)
+    for(let i=0;i<buf.length-t;i++)
       r[t]+=buf[i]*buf[i+t];
-  for(let i=1;i<SIZE-1;i++)
-    r[i]=(r[i-1]+r[i]+r[i+1])/3;
 
-  let d=0; while(r[d]>r[d+1] && d<SIZE) d++;
-  let maxval=-1,maxpos=-1;
-  for(let i=d;i<SIZE;i++){
-    if(r[i]>maxval){maxval=r[i];maxpos=i;}
-  }
-  if(!maxpos) return null;
-  return sampleRate/maxpos;
+  let d=0; while(r[d]>r[d+1]) d++;
+  let max=-1,pos=-1;
+  for(let i=d;i<buf.length;i++)
+    if(r[i]>max){max=r[i];pos=i;}
+
+  return pos>0?sr/pos:null;
 }
 
 function freqToNote(freq){
   let midi=Math.round(12*Math.log2(freq/440)+69);
-  let note=noteNames[midi%12]+Math.floor(midi/12);
-  return note;
+  return noteNames[midi%12]+Math.floor(midi/12);
 }
 
-// 调式推测
-function guessScale(melody){
-  if(melody.length===0) return "-";
-  const pitchCount = {};
-  melody.forEach(n=>{
-    let pitch = n.note.replace(/\d/,''); 
-    pitchCount[pitch] = (pitchCount[pitch]||0)+1;
-  });
-
-  const scales = {
-      "C大调":["C","D","E","F","G","A","B"],
-      "A小调":["A","B","C","D","E","F","G"],
-      "G大调":["G","A","B","C","D","E","F#"],
-      "D大调":["D","E","F#","G","A","B","C#"],
-      "E小调":["E","F#","G","A","B","C","D"],
+// ====== 调式 / 和弦 ======
+function guessScale(){
+  const pitches=recordedMelody.map(n=>n.note.replace(/\d/,''));
+  const scales={
+    "C大调":["C","D","E","F","G","A","B"],
+    "A小调":["A","B","C","D","E","F","G"]
   };
-
-  let bestScale="-",bestScore=-1;
-  for(const scaleName in scales){
-      const scale= scales[scaleName];
-      let score=0;
-      for(const pitch in pitchCount){
-          if(scale.includes(pitch)) score += pitchCount[pitch];
-      }
-      if(score>bestScore){bestScore=score; bestScale=scaleName;}
+  let best="-",score=0;
+  for(let k in scales){
+    let s=0;
+    pitches.forEach(p=>{if(scales[k].includes(p))s++;});
+    if(s>score){score=s;best=k;}
   }
-  return bestScale;
+  return best;
 }
 
-// 和弦识别
-const chordTable = {
-  "C":["C","E","G"],
-  "Dmin":["D","F","A"],
-  "Emin":["E","G","B"],
-  "F":["F","A","C"],
-  "G":["G","B","D"],
-  "Amin":["A","C","E"],
-  "Bdim":["B","D","F"],
-};
-function guessChord(melody){
-  if(melody.length<3) return "-";
-  const last3 = melody.slice(-3).map(n=>n.note.replace(/\d/,''));
-  for(const chord in chordTable){
-      const notes = chordTable[chord];
-      if(last3.every(n=>notes.includes(n))) return chord;
-  }
-  return last3.join("-")+"（未知和弦）";
+function guessChord(){
+  if(recordedMelody.length<3) return "-";
+  const last=recordedMelody.slice(-3).map(n=>n.note.replace(/\d/,''));
+  const chords={
+    "C":["C","E","G"],
+    "F":["F","A","C"],
+    "G":["G","B","D"],
+    "Am":["A","C","E"]
+  };
+  for(let c in chords)
+    if(last.every(n=>chords[c].includes(n))) return c;
+  return "-";
 }
 
-function updateMelodyDisplay(){
-  const div=document.getElementById("melodyDisplay");
-  div.innerHTML="";
-  recordedMelody.forEach(n=>{
-    const span=document.createElement('span');
-    span.className='note';
-    span.textContent=n.note;
-    div.appendChild(span);
-  });
+// ====== UI ======
+function updateUI(){
+  document.getElementById("melody").innerHTML=
+    recordedMelody.map(n=>`<span class="note">${n.note}</span>`).join("");
+  document.getElementById("currentScale").textContent=guessScale();
+  document.getElementById("currentChord").textContent=guessChord();
 }
 
-// 真正开始录音
+// ====== 录音 ======
 async function startRecording(){
-  if(actx.state==="suspended") await actx.resume();
-  mediaStream=await navigator.mediaDevices.getUserMedia({audio:true});
-  mediaRecorder=new MediaRecorder(mediaStream);
-  audioChunks=[];
-  recordedMelody=[];
-  mediaRecorder.ondataavailable=e=>audioChunks.push(e.data);
-  mediaRecorder.start();
-  isRecording=true;
-
-  document.getElementById("currentNote").textContent="-";
-  document.getElementById("currentPitchClass").textContent="-";
-  document.getElementById("currentScale").textContent="-";
-  document.getElementById("currentChord").textContent="-";
-  document.getElementById("melodyDisplay").innerHTML="";
-
-  const source=actx.createMediaStreamSource(mediaStream);
-  const analyser=actx.createAnalyser();
+  stream=await navigator.mediaDevices.getUserMedia({audio:true});
+  const source=ctx.createMediaStreamSource(stream);
+  const analyser=ctx.createAnalyser();
   analyser.fftSize=2048;
   source.connect(analyser);
-  const dataArray=new Float32Array(analyser.fftSize);
+  const buf=new Float32Array(analyser.fftSize);
 
-  function detectPitch(){
+  recordedMelody=[];
+  isRecording=true;
+  lastNote=null; stableCount=0; lastNoteTime=performance.now();
+
+  function loop(){
     if(!isRecording) return;
-    analyser.getFloatTimeDomainData(dataArray);
-    let pitch=autoCorrelate(dataArray,actx.sampleRate);
+    analyser.getFloatTimeDomainData(buf);
+    const pitch=autoCorrelate(buf,ctx.sampleRate);
     if(pitch){
-      let note=freqToNote(pitch);
-      let pitchClass=note.replace(/\d/,"");
-      recordedMelody.push({note,duration:500});
+      const note=freqToNote(pitch);
       document.getElementById("currentNote").textContent=note;
-      document.getElementById("currentPitchClass").textContent=pitchClass;
-      document.getElementById("currentScale").textContent=guessScale(recordedMelody);
-      document.getElementById("currentChord").textContent=guessChord(recordedMelody);
-      updateMelodyDisplay();
+
+      if(note===lastNote) stableCount++;
+      else stableCount=1;
+
+      const now=performance.now();
+      if(stableCount===STABLE_FRAMES && note!==lastNote && now-lastNoteTime>MIN_NOTE_MS){
+        recordedMelody.push({note,duration:0});
+        lastNote=note;
+        lastNoteTime=now;
+        updateUI();
+      }
+      if(recordedMelody.length>0)
+        recordedMelody[recordedMelody.length-1].duration+=16;
     }
-    requestAnimationFrame(detectPitch);
+    requestAnimationFrame(loop);
   }
-  detectPitch();
+  loop();
 }
 
-// 倒计时启动录音
-async function startRecordingWithCountdown(){
-  const status=document.getElementById("status");
-  for(let i=3;i>0;i--){
-    status.textContent="准备录音："+i;
-    await new Promise(r=>setTimeout(r,1000));
-  }
-  status.textContent="录音中…";
+// ====== 钢琴音色回放（多泛音） ======
+function playNote(note,duration){
+  const freq=440*Math.pow(2,(noteToMidi(note)-69)/12);
+  const gain=ctx.createGain();
+  gain.connect(ctx.destination);
+  gain.gain.setValueAtTime(0,ctx.currentTime);
+  gain.gain.linearRampToValueAtTime(0.3,ctx.currentTime+0.01);
+  gain.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+duration/1000);
+
+  [1,2,3].forEach(h=>{
+    const osc=ctx.createOscillator();
+    osc.type="sine";
+    osc.frequency.value=freq*h;
+    osc.connect(gain);
+    osc.start();
+    osc.stop(ctx.currentTime+duration/1000+0.1);
+  });
+}
+
+function noteToMidi(note){
+  const map={C:0,"C#":1,D:2,"D#":3,E:4,F:5,"F#":6,G:7,"G#":8,A:9,"A#":10,B:11};
+  return map[note.slice(0,-1)] + (parseInt(note.slice(-1))+1)*12;
+}
+
+// ====== 按钮 ======
+document.getElementById("start").onclick=async()=>{
+  document.getElementById("status").textContent="3…";
+  await new Promise(r=>setTimeout(r,1000));
+  document.getElementById("status").textContent="2…";
+  await new Promise(r=>setTimeout(r,1000));
+  document.getElementById("status").textContent="1…";
+  await new Promise(r=>setTimeout(r,1000));
+  document.getElementById("status").textContent="录音中";
   startRecording();
-}
+};
 
-// 停止录音
 document.getElementById("stop").onclick=()=>{
   isRecording=false;
-  mediaRecorder.stop();
-  mediaStream.getTracks().forEach(t=>t.stop());
+  stream.getTracks().forEach(t=>t.stop());
   document.getElementById("status").textContent="录音结束";
 };
 
-// 回放钢琴
 document.getElementById("play").onclick=async()=>{
-  document.getElementById("status").textContent="回放中…";
-  for(let i=0;i<recordedMelody.length;i++){
-    const n=recordedMelody[i];
-    const osc=actx.createOscillator();
-    const gain=actx.createGain();
-    osc.type='sine'; // 钢琴近似
-    osc.frequency.value=noteToFreq(n.note);
-    gain.gain.setValueAtTime(0,actx.currentTime);
-    gain.gain.linearRampToValueAtTime(0.3,actx.currentTime+0.01);
-    gain.gain.exponentialRampToValueAtTime(0.001,actx.currentTime+n.duration/1000);
-    osc.connect(gain).connect(actx.destination);
-    osc.start();
-    osc.stop(actx.currentTime+n.duration/1000+0.05);
+  document.getElementById("status").textContent="回放中";
+  for(const n of recordedMelody){
+    playNote(n.note,n.duration);
     await new Promise(r=>setTimeout(r,n.duration));
   }
-  document.getElementById("status").textContent="回放结束";
+  document.getElementById("status").textContent="完成";
 };
-
-// 绑定按钮
-document.getElementById("start").onclick=startRecordingWithCountdown;
 </script>
 </body>
 </html>
-
