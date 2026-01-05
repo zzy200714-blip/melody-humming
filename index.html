@@ -2,26 +2,22 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>钢琴旋律演示</title>
+<title>钢琴播放哼唱旋律</title>
 <style>
-body { background: #111; color: #eee; font-family: sans-serif; text-align:center; padding:50px;}
+body { background:#111; color:#eee; font-family:sans-serif; text-align:center; padding:50px;}
 button { padding:10px 20px; margin:10px; font-size:16px; cursor:pointer;}
-#notes {margin-top:30px; font-size:24px;}
-.note { display:inline-block; padding:5px 10px; margin:3px; border-radius:4px; background:#333; transition:0.2s; }
-.note.active { background:#f90; color:#000; font-weight:bold; }
 </style>
 </head>
 <body>
-<h1>钢琴旋律演示</h1>
-<button id="play">▶ 播放旋律</button>
-<div id="notes"></div>
+<h1>钢琴播放你的旋律</h1>
+<button id="play">▶ 播放哼唱旋律</button>
 
 <script>
 const AudioContext = window.AudioContext || window.webkitAudioContext;
 const actx = new AudioContext();
 
-// 旋律序列
-const melody = [
+// 这里替换成你网站记录的旋律音符和时值
+const recordedMelody = [
   {note:"B4", duration:600},
   {note:"A#4", duration:600},
   {note:"F4", duration:600},
@@ -33,16 +29,7 @@ const melody = [
   {note:"G4", duration:600},
 ];
 
-// 创建音符显示
-const notesDiv = document.getElementById('notes');
-melody.forEach(n=>{
-  const span = document.createElement('span');
-  span.className = 'note';
-  span.textContent = n.note;
-  notesDiv.appendChild(span);
-});
-
-// 音名转频率
+// 音符转换成频率
 function noteToFreq(note){
   const noteMap = {C:0,C#:1,D:2,D#:3,E:4,F:5,F#:6,G:7,G#:8,A:9,A#:10,B:11};
   let octave = parseInt(note.slice(-1));
@@ -50,33 +37,26 @@ function noteToFreq(note){
   return 440 * Math.pow(2,(noteMap[key] + (octave-4)*12 - 9)/12);
 }
 
-// 播放旋律
+// 播放旋律函数
 async function playMelody(){
-  const spans = document.querySelectorAll('.note');
-  for(let i=0;i<melody.length;i++){
-    const n = melody[i];
+  for(let i=0;i<recordedMelody.length;i++){
+    const n = recordedMelody[i];
     const osc = actx.createOscillator();
     const gain = actx.createGain();
-    osc.type = 'sine';
+    osc.type = 'sine'; // 改成钢琴近似音色
     osc.frequency.value = noteToFreq(n.note);
 
-    // 钢琴包络 + 模拟延音
+    // 简单包络模拟钢琴
     gain.gain.setValueAtTime(0, actx.currentTime);
     gain.gain.linearRampToValueAtTime(0.3, actx.currentTime + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + n.duration/1000 + 0.2); // 延音0.2秒
+    gain.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + n.duration/1000);
 
     osc.connect(gain).connect(actx.destination);
     osc.start();
-    osc.stop(actx.currentTime + n.duration/1000 + 0.25);
-
-    // 高亮当前音符
-    spans.forEach(s=>s.classList.remove('active'));
-    spans[i].classList.add('active');
+    osc.stop(actx.currentTime + n.duration/1000 + 0.05);
 
     await new Promise(r=>setTimeout(r,n.duration));
   }
-  // 播放完清除高亮
-  document.querySelectorAll('.note').forEach(s=>s.classList.remove('active'));
 }
 
 document.getElementById("play").onclick = async ()=>{
@@ -86,9 +66,3 @@ document.getElementById("play").onclick = async ()=>{
 </script>
 </body>
 </html>
-
-
-</body>
-</html>
-
-
