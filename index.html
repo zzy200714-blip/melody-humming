@@ -174,7 +174,11 @@ function stopRecording(){
     micStream.getTracks().forEach(t => t.stop());
     micStream = null;
   }
-  statusEl.textContent = "已停止";
+ if (lastNote && lastNote.dur >= MIN_DURATION){
+  recordedNotes.push(lastNote);
+  lastNote = null;
+}
+ statusEl.textContent = "已停止";
   // final small cleanup: remove small durations less than threshold
   recordedNotes = recordedNotes.filter(n => n.dur >= MIN_NOTE_MS);
   renderMelody();
@@ -185,6 +189,8 @@ function stopRecording(){
     analysisEl.textContent = makeAnalysis(recordedNotes.map(n=>n.midi));
   }
 }
+
+
 
 /* main per-frame loop */
 function recordLoop(){
@@ -276,6 +282,21 @@ function renderMelodyPartial(){
     span.textContent = `${n.name} — ${Math.round(n.dur)}ms`;
     melodyEl.appendChild(span);
   });
+}
+function pushNote(midi, duration){
+  if (!lastNote){
+    lastNote = { midi, dur: duration };
+    return;
+  }
+
+  if (Math.abs(lastNote.midi - midi) < CENT_TOLERANCE){
+    lastNote.dur += duration;
+  } else {
+    if (lastNote.dur >= MIN_DURATION){
+      recordedNotes.push(lastNote);
+    }
+    lastNote = { midi, dur: duration };
+  }
 }
 
 /* ======= 音高近似（把频率映射到最近 MIDI） ======= */
