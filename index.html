@@ -1,451 +1,200 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh">
 <head>
-<meta charset="utf-8" />
-<title>Hum → Melody（稳定版）</title>
-<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta charset="UTF-8" />
+<title>哼唱成旋律（钢琴回放）</title>
 <style>
-  :root{--bg:#0b0b0b;--fg:#eee;--muted:#555;--accent:#f5c85a}
-  body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial;padding:20px}
-  .wrap{max-width:900px;margin:0 auto}
-  h1{margin:0 0 12px;font-size:20px}
-  .controls{margin:12px 0}
-  button{padding:10px 14px;margin-right:10px;font-size:15px;border-radius:8px;border:0;background:#222;color:var(--fg);cursor:pointer}
-  #status{display:inline-block;margin-left:12px;color:var(--muted)}
-  #note{font-size:44px;margin:16px 0}
-  #rmsBar{height:8px;background:#222;border-radius:4px;overflow:hidden;margin:8px 0}
-  #rmsFill{height:100%;width:0%;background:linear-gradient(90deg,#2ee6a7,#5fe0ff)}
-  .panel{background:#0f0f0f;padding:12px;border-radius:8px;margin-top:10px}
-  #melody{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px}
-  .mnote{background:#1b1b1b;padding:6px 10px;border-radius:6px;font-weight:600}
-  .small{color:var(--muted);font-size:13px;margin-top:6px}
-  #keyDisplay{margin-top:8px;font-weight:600}
-  footer{margin-top:18px;color:var(--muted);font-size:13px}
-  @media (max-width:600px){button{display:block;margin:6px 0}}
+body{font-family:sans-serif;background:#111;color:#eee;padding:20px}
+button{margin:5px;padding:10px 16px;font-size:16px}
+#melody span{margin-right:6px}
 </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>🎤 Hum → 🎹 Melody（稳定版）</h1>
-    <div class="controls">
-      <button id="btnStart">开始哼唱（倒计时）</button>
-      <button id="btnStop">停止</button>
-      <button id="btnPlay">钢琴回放</button>
-      <span id="status">等待操作</span>
-    </div>
 
-    <div id="note" aria-live="polite">—</div>
-    <div id="rmsBar"><div id="rmsFill"></div></div>
-    <div class="panel">
-      <div><strong>已记录旋律（音名 → 时长 ms）：</strong></div>
-      <div id="melody" aria-live="polite"></div>
-      <div id="keyDisplay" class="small">调性：—</div>
-      <div id="analysis" class="small"></div>
-    </div>
+<h2>🎤 哼唱 → 🎹 钢琴旋律</h2>
 
-    <footer>说明：在出现浏览器麦克风权限提示时请允许。建议用 Chrome/Edge；首次点击会激活音频。</footer>
-  </div>
+<button id="start">开始录音</button>
+<button id="stop">停止</button>
+<button id="play">回放</button>
+
+<p id="status">等待</p>
+<p id="pitch"></p>
+<p id="key"></p>
+<div id="melody"></div>
 
 <script>
-/* ======= 配置 ======= */
-const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-const MIN_RMS = 0.02;          // 声音门限，低于不识别
-const STABLE_FRAMES = 6;       // 连续帧判定稳定
-const MIN_NOTE_MS = 150;       // 记录音符的最短时长阈值（ms）
-const FRAME_INTERVAL_MS = 16;  // 近似帧间隔（用于时长累计）
-/* ====================== */
+/* ========= 音频基础 ========= */
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+const ctx = new AudioCtx();
 
-let audioCtx = null;
-let analyser = null;
-let dataBuf = null;
-let micStream = null;
-
+let micStream, analyser, data;
 let recording = false;
-let recordedNotes = []; // {midi:69, name:"A4", dur: 320}
-let lastDetectedMidi = null;
-let stableCount = 0;
-let lastTimestamp = 0; // ms
+let rafId;
 
-// helpers
-function midiToFreq(m) { return 440 * Math.pow(2, (m - 69) / 12); }
-function freqToMidi(freq){ return Math.round(12 * Math.log2(freq / 440) + 69); }
-function midiToName(m){
-  const n = m % 12;
-  return NOTE_NAMES[n] + Math.floor(m/12);
+/* ========= 旋律数据 ========= */
+let recordedNotes = [];
+let lastNote = null;
+
+const FRAME_MS = 50;
+const MIN_DURATION = 120;
+const MIN_NOTE_MS = 120;
+
+/* ========= 音名 ========= */
+const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+
+/* ========= UI ========= */
+const statusEl = document.getElementById("status");
+const pitchEl = document.getElementById("pitch");
+const melodyEl = document.getElementById("melody");
+const keyEl = document.getElementById("key");
+
+document.getElementById("start").onclick = startRecording;
+document.getElementById("stop").onclick = stopRecording;
+document.getElementById("play").onclick = playRecorded;
+
+/* ========= 音高工具 ========= */
+function freqToMidi(freq){
+  return Math.round(12 * Math.log2(freq / 440) + 69);
 }
-function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
-
-// improved autocorrelation (simple)
-function detectPitchAutoCorr(buf, sampleRate){
-  // compute RMS and quick check
-  let rms = 0;
-  for(let i=0;i<buf.length;i++) rms += buf[i]*buf[i];
-  rms = Math.sqrt(rms / buf.length);
-  if (rms < MIN_RMS) return {freq:null, rms};
-  // normalized autocorrelation
-  const size = buf.length;
-  let bestOffset = -1;
-  let bestCorr = 0;
-  // search range: reasonable lags for human voice / singing
-  const minLag = 20;
-  const maxLag = Math.min(1000, size - 2);
-  for(let lag=minLag; lag<=maxLag; lag++){
-    let corr = 0;
-    for(let i=0;i< size - lag; i++){
-      corr += buf[i] * buf[i + lag];
-    }
-    if (corr > bestCorr){
-      bestCorr = corr;
-      bestOffset = lag;
-    }
-  }
-  if (bestOffset <= 0 || bestCorr < 0.01) return {freq:null, rms};
-  const freq = sampleRate / bestOffset;
-  return {freq, rms};
+function midiToFreq(m){
+  return 440 * Math.pow(2,(m-69)/12);
+}
+function midiName(m){
+  return NOTE_NAMES[m % 12] + Math.floor(m/12 - 1);
 }
 
-/* ========= UI refs ========= */
-const btnStart = document.getElementById('btnStart');
-const btnStop  = document.getElementById('btnStop');
-const btnPlay  = document.getElementById('btnPlay');
-const statusEl = document.getElementById('status');
-const noteEl   = document.getElementById('note');
-const rmsFill  = document.getElementById('rmsFill');
-const melodyEl = document.getElementById('melody');
-const keyDisplay = document.getElementById('keyDisplay');
-const analysisEl = document.getElementById('analysis');
-
-/* ========= 初始化麦克风（在用户点击时触发） ========= */
-async function ensureAudio(){
-  if (audioCtx && analyser) return;
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  // do not resume here; resume will be done on user click (in start handler)
-}
-
-/* ========= 录音循环与稳定判定 ========= */
-async function startRecordingWithCountdown(){
-  // resume context in click handler to satisfy browser policy
-  await ensureAudio();
-  if (audioCtx.state === "suspended") await audioCtx.resume();
-
-  // countdown 3..2..1
-  statusEl.textContent = "准备：3";
-  await sleep(600);
-  statusEl.textContent = "准备：2";
-  await sleep(600);
-  statusEl.textContent = "准备：1";
-  await sleep(500);
-
-  // get user media
-  try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (e) {
-    statusEl.textContent = "获取麦克风失败，请检查权限";
-    console.error(e);
+/* ========= 旋律净化 ========= */
+function pushNote(midi, dur){
+  if(!lastNote){
+    lastNote = {midi, dur};
     return;
   }
+  if(Math.abs(lastNote.midi - midi) < 0.5){
+    lastNote.dur += dur;
+  }else{
+    if(lastNote.dur >= MIN_DURATION){
+      recordedNotes.push(lastNote);
+    }
+    lastNote = {midi, dur};
+  }
+}
 
-  // create analyser
-  const src = audioCtx.createMediaStreamSource(micStream);
-  analyser = audioCtx.createAnalyser();
+/* ========= 录音 ========= */
+async function startRecording(){
+  if(ctx.state === "suspended") await ctx.resume();
+  recordedNotes = [];
+  lastNote = null;
+
+  micStream = await navigator.mediaDevices.getUserMedia({audio:true});
+  const src = ctx.createMediaStreamSource(micStream);
+  analyser = ctx.createAnalyser();
   analyser.fftSize = 2048;
   src.connect(analyser);
-  dataBuf = new Float32Array(analyser.fftSize);
-
-  // reset states
-  recordedNotes = [];
-  lastDetectedMidi = null;
-  stableCount = 0;
-  lastTimestamp = performance.now();
+  data = new Float32Array(analyser.fftSize);
 
   recording = true;
   statusEl.textContent = "录音中…";
-  noteEl.textContent = "—";
-  melodyEl.innerHTML = "";
-  keyDisplay.textContent = "调性：—";
-  analysisEl.textContent = "";
-
-  requestAnimationFrame(recordLoop);
+  loop();
 }
 
 function stopRecording(){
   recording = false;
-  if (micStream){
-    micStream.getTracks().forEach(t => t.stop());
+  if(micStream){
+    micStream.getTracks().forEach(t=>t.stop());
     micStream = null;
   }
- if (lastNote && lastNote.dur >= MIN_DURATION){
-  recordedNotes.push(lastNote);
-  lastNote = null;
-}
- statusEl.textContent = "已停止";
-  // final small cleanup: remove small durations less than threshold
-  recordedNotes = recordedNotes.filter(n => n.dur >= MIN_NOTE_MS);
+  if(lastNote && lastNote.dur >= MIN_DURATION){
+    recordedNotes.push(lastNote);
+    lastNote = null;
+  }
+  recordedNotes = recordedNotes.filter(n=>n.dur>=MIN_NOTE_MS);
   renderMelody();
-  // auto-detect key
-  if (recordedNotes.length) {
-    const key = detectKey(recordedNotes.map(n => n.midi));
-    keyDisplay.textContent = `调性：${NOTE_NAMES[key.tonic]} ${key.mode}（可信度 ${key.score}）`;
-    analysisEl.textContent = makeAnalysis(recordedNotes.map(n=>n.midi));
-  }
+  detectKey();
+  statusEl.textContent = "已停止";
 }
 
+/* ========= 音高检测 ========= */
+function detectPitch(){
+  analyser.getFloatTimeDomainData(data);
+  let rms = 0;
+  for(let i=0;i<data.length;i++) rms += data[i]*data[i];
+  rms = Math.sqrt(rms/data.length);
+  if(rms < 0.01) return null;
 
-
-/* main per-frame loop */
-function recordLoop(){
-  if (!recording || !analyser) return;
-  analyser.getFloatTimeDomainData(dataBuf);
-  const now = performance.now();
-
-  const {freq, rms} = detectPitchAutoCorr(dataBuf, audioCtx.sampleRate);
-  // update RMS bar
-  const rmsPct = clamp((rms - MIN_RMS) / 0.05, 0, 1) * 100;
-  rmsFill.style.width = rms ? `${rmsPct}%` : `0%`;
-
-  if (!freq) {
-    stableCount = 0;
-    noteEl.textContent = "—";
-    // If there's a current ongoing note, accumulate its time here by delta
-    if (recordedNotes.length && !recordedNotes[recordedNotes.length-1]._ended){
-      const delta = now - lastTimestamp;
-      recordedNotes[recordedNotes.length-1].dur += delta;
+  let best = -1, bestLag = -1;
+  for(let lag=20;lag<1000;lag++){
+    let sum=0;
+    for(let i=0;i<1000;i++){
+      sum += data[i]*data[i+lag];
     }
-    lastTimestamp = now;
-    requestAnimationFrame(recordLoop);
-    return;
+    if(sum>best){best=sum;bestLag=lag;}
   }
-
-  const midi = freqToMidiApprox(freq);
-  noteEl.textContent = midiToName(midi);
-
-  if (midi === lastDetectedMidi) {
-    stableCount++;
-  } else {
-    // new pitch observed
-    lastDetectedMidi = midi;
-    stableCount = 1;
-  }
-
-  // when stable enough, push new note if it is sufficiently separated in time
-  if (stableCount >= STABLE_FRAMES) {
-    const last = recordedNotes[recordedNotes.length - 1];
-    if (!last || last.midi !== midi) {
-      // close previous if exists
-      if (last && !last._ended) {
-        last._ended = true;
-        // leave its duration as measured
-      }
-      // push new note
-      recordedNotes.push({ midi, name: midiToName(midi), dur: 0, _ended: false });
-    } else {
-      // same note continues
-    }
-  }
-
-  // accumulate duration for current note
-  if (recordedNotes.length) {
-    const cur = recordedNotes[recordedNotes.length - 1];
-    const delta = now - lastTimestamp;
-    cur.dur += delta;
-  }
-
-  lastTimestamp = now;
-  renderMelodyPartial();
-  requestAnimationFrame(recordLoop);
+  return ctx.sampleRate / bestLag;
 }
 
-/* ======= 渲染旋律 ======= */
+/* ========= 主循环 ========= */
+function loop(){
+  if(!recording) return;
+  const freq = detectPitch();
+  if(freq){
+    const midi = freqToMidi(freq);
+    pitchEl.textContent = "音高："+midiName(midi);
+    pushNote(midi, FRAME_MS);
+  }
+  rafId = setTimeout(loop, FRAME_MS);
+}
+
+/* ========= 渲染 ========= */
 function renderMelody(){
-  melodyEl.innerHTML = '';
+  melodyEl.innerHTML = "";
   recordedNotes.forEach(n=>{
-    const span = document.createElement('div');
-    span.className = 'mnote';
-    span.textContent = `${n.name} — ${Math.round(n.dur)}ms`;
-    melodyEl.appendChild(span);
+    const s=document.createElement("span");
+    s.textContent=midiName(n.midi);
+    melodyEl.appendChild(s);
   });
 }
-function renderMelodyPartial(){
-  // render but hide very short last note until it stabilizes
-  const temp = recordedNotes.map(n => ({...n}));
-  // don't show the last if it's too short
-  if (temp.length){
-    const last = temp[temp.length-1];
-    if (!last || last.dur < MIN_NOTE_MS) {
-      temp.pop();
-    }
-  }
-  melodyEl.innerHTML = '';
-  temp.forEach(n=>{
-    const span = document.createElement('div');
-    span.className = 'mnote';
-    span.textContent = `${n.name} — ${Math.round(n.dur)}ms`;
-    melodyEl.appendChild(span);
+
+/* ========= 回放 ========= */
+function playRecorded(){
+  let t = ctx.currentTime + 0.1;
+  recordedNotes.forEach(n=>{
+    playPiano(midiToFreq(n.midi), t, n.dur/1000);
+    t += n.dur/1000;
   });
 }
-function pushNote(midi, duration){
-  if (!lastNote){
-    lastNote = { midi, dur: duration };
-    return;
-  }
 
-  if (Math.abs(lastNote.midi - midi) < CENT_TOLERANCE){
-    lastNote.dur += duration;
-  } else {
-    if (lastNote.dur >= MIN_DURATION){
-      recordedNotes.push(lastNote);
-    }
-    lastNote = { midi, dur: duration };
-  }
-}
+function playPiano(freq, time, dur){
+  const g = ctx.createGain();
+  g.connect(ctx.destination);
+  g.gain.setValueAtTime(0.0001,time);
+  g.gain.exponentialRampToValueAtTime(0.8,time+0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001,time+dur);
 
-/* ======= 音高近似（把频率映射到最近 MIDI） ======= */
-function freqToMidiApprox(freq){
-  const midi = Math.round(12 * Math.log2(freq / 440) + 69);
-  return midi;
-}
-
-/* ======= 回放（按时序播放） ======= */
-async function playRecorded(){
-  if (!recordedNotes.length) { statusEl.textContent = "无已记录旋律"; return; }
-  if (audioCtx.state === "suspended") await audioCtx.resume();
-
-  statusEl.textContent = "回放中…";
-  // schedule notes sequentially using start times based on durations
-  let t = audioCtx.currentTime + 0.08; // small offset
-  for (const n of recordedNotes){
-    const freq = midiToFreq(n.midi);
-    scheduleNote(freq, t, n.dur / 1000);
-    t += (n.dur / 1000);
-  }
-  // when finished
-  const total = recordedNotes.reduce((s, x) => s + x.dur, 0);
-  setTimeout(()=>{ statusEl.textContent = "回放结束"; }, total + 300);
-}
-
-/* schedule one note at given startTime (s) with dur(s) */
-function scheduleNote(freq, startTime, dur){
-  const ctx = audioCtx;
-
-  /* ===== 主音量包络 ===== */
-  const master = ctx.createGain();
-  master.gain.setValueAtTime(0.0001, startTime);
-  master.gain.exponentialRampToValueAtTime(1.0, startTime + 0.008);
-  master.gain.exponentialRampToValueAtTime(0.0005, startTime + dur + 0.4);
-
-  /* ===== 琴体滤波（随时间变暗） ===== */
-  const body = ctx.createBiquadFilter();
-  body.type = "lowpass";
-  body.frequency.setValueAtTime(5200, startTime);
-  body.frequency.exponentialRampToValueAtTime(1600, startTime + dur);
-
-  body.connect(master);
-  master.connect(ctx.destination);
-
-  /* ===== 琴槌瞬态（敲击噪声） ===== */
-  const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.03, ctx.sampleRate);
-  const data = noiseBuf.getChannelData(0);
-  for (let i = 0; i < data.length; i++) {
-    data[i] = (Math.random() * 2 - 1) * Math.exp(-i / 180);
-  }
-  const noise = ctx.createBufferSource();
-  const noiseGain = ctx.createGain();
-  noise.buffer = noiseBuf;
-  noiseGain.gain.setValueAtTime(0.35, startTime);
-  noiseGain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.03);
-  noise.connect(noiseGain).connect(body);
-  noise.start(startTime);
-  noise.stop(startTime + 0.03);
-
-  /* ===== 三根弦（微失谐） ===== */
-  [
-    {detune:-6, gain:0.9},
-    {detune: 0, gain:1.0},
-    {detune:+6, gain:0.9}
-  ].forEach(s=>{
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = "sine";
-    o.frequency.setValueAtTime(freq, startTime);
-    o.detune.setValueAtTime(s.detune, startTime);
-    g.gain.setValueAtTime(s.gain, startTime);
-    g.gain.exponentialRampToValueAtTime(0.0001, startTime + dur + 0.5);
-    o.connect(g).connect(body);
-    o.start(startTime);
-    o.stop(startTime + dur + 0.6);
+  [1,2,3].forEach((r,i)=>{
+    const o=ctx.createOscillator();
+    o.type="sine";
+    o.frequency.setValueAtTime(freq*r,time);
+    o.connect(g);
+    o.start(time);
+    o.stop(time+dur+0.05);
   });
+}
 
-  /* ===== 泛音（让声音亮但不刺） ===== */
-  [2,3,4].forEach((r,i)=>{
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = "sine";
-    o.frequency.setValueAtTime(freq * r, startTime);
-    g.gain.setValueAtTime(0.18/(i+1), startTime);
-    g.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.25);
-    o.connect(g).connect(body);
-    o.start(startTime);
-    o.stop(startTime + 0.3);
-  });
-
-
-
-
-/* ======= 调性检测（大调 / 小调） ======= */
-const MAJOR = [0,2,4,5,7,9,11];
-const MINOR = [0,2,3,5,7,8,10];
-
-function detectKey(midiArray){
-  if (!midiArray.length) return { tonic:0, mode:"—", score:0 };
-  const hist = Array(12).fill(0);
-  midiArray.forEach(m => hist[m % 12]++);
-  let best = { tonic:0, mode:"Major", score:-1 };
-  for (let t=0;t<12;t++){
-    const majScore = MAJOR.reduce((s, step) => s + hist[(t+step)%12], 0);
-    const minScore = MINOR.reduce((s, step) => s + hist[(t+step)%12], 0);
-    if (majScore > best.score) best = { tonic:t, mode:"大调", score:majScore };
-    if (minScore > best.score) best = { tonic:t, mode:"小调", score:minScore };
+/* ========= 调性检测 ========= */
+function detectKey(){
+  if(!recordedNotes.length) return;
+  const MAJ=[0,2,4,5,7,9,11], MIN=[0,2,3,5,7,8,10];
+  const hist=Array(12).fill(0);
+  recordedNotes.forEach(n=>hist[n.midi%12]++);
+  let best={score:-1};
+  for(let t=0;t<12;t++){
+    const maj=MAJ.reduce((s,x)=>s+hist[(t+x)%12],0);
+    const min=MIN.reduce((s,x)=>s+hist[(t+x)%12],0);
+    if(maj>best.score) best={t,mode:"大调",score:maj};
+    if(min>best.score) best={t,mode:"小调",score:min};
   }
-  return best;
+  keyEl.textContent=`调性：${NOTE_NAMES[best.t]} ${best.mode}`;
 }
-
-/* ======= 简单旋律特征分析（用于找歌） ======= */
-function makeAnalysis(midiArray){
-  if (!midiArray.length) return "";
-  const unique = Array.from(new Set(midiArray.map(m=>m%12)));
-  let lines = [];
-  if (unique.length > 7) lines.push("特征：音级较多，偏半音/装饰音丰富（非严格调式）");
-  else lines.push("特征：音级较集中，可能具备明确调性");
-  // interval types
-  const intervals = [];
-  for (let i=1;i<midiArray.length;i++) intervals.push(Math.abs(midiArray[i]-midiArray[i-1]));
-  const avgInterval = intervals.reduce((s,x)=>s+x,0)/Math.max(1,intervals.length);
-  lines.push(`平均音程跨度：${avgInterval.toFixed(1)} 半音`);
-  return lines.join("； ");
-}
-
-/* ======= 小工具 ======= */
-function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
-function midiToFreq(m){ return 440 * Math.pow(2, (m - 69) / 12); }
-
-/* ======= 事件绑定 ======= */
-btnStart.addEventListener('click', async ()=>{
-  // ensure audio context and resume in user gesture
-  await ensureAudio();
-  if (audioCtx.state === "suspended") await audioCtx.resume();
-  startRecordingWithCountdown();
-});
-btnStop.addEventListener('click', ()=>stopRecording());
-btnPlay.addEventListener('click', ()=>{ if (!audioCtx) ensureAudio().then(()=>playRecorded()); else playRecorded(); });
-
-/* ====== 兼容和错误提示 ====== */
-window.addEventListener('unload', ()=>{
-  if (micStream) micStream.getTracks().forEach(t=>t.stop());
-  if (audioCtx) audioCtx.close();
-});
-
 </script>
 </body>
 </html>
-
-
