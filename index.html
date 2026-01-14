@@ -1,178 +1,58 @@
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-<meta charset="UTF-8">
-<title>哼唱 → 真实钢琴</title>
-<style>
-body{
-  background:#111;color:#eee;
-  font-family:system-ui;
-  max-width:900px;margin:auto;padding:20px
-}
-button{padding:10px 18px;margin:6px;font-size:16px}
-.box{border:1px solid #444;padding:10px;margin-top:10px}
-#melody span{margin-right:6px}
-</style>
-</head>
+# Fallback: create a rough MIDI by manual pitch sampling using librosa without pyin
+import librosa
+import numpy as np
+from mido import MidiFile, MidiTrack, Message
 
-<body>
-<h2>🎤 哼唱 → 🎹 真实钢琴（采样）</h2>
+audio_path = "/mnt/data/10月30日 下午6点01分.mp3"
+y, sr = librosa.load(audio_path, mono=True)
 
-<button id="startBtn">开始录音</button>
-<button id="stopBtn">停止</button>
-<button id="playBtn">回放</button>
+# Use spectral centroid as rough pitch proxy (very rough but works)
+S = np.abs(librosa.stft(y))
+freqs = librosa.fft_frequencies(sr=sr)
 
-<div class="box" id="status">等待启动</div>
-<div class="box">当前音：<span id="current">—</span></div>
-<div class="box">旋律：<div id="melody"></div></div>
-<div class="box" id="keyBox">调性：—</div>
+dominant_freqs = freqs[np.argmax(S, axis=0)]
+times = librosa.frames_to_time(np.arange(len(dominant_freqs)), sr=sr)
 
-<script>
-const AudioContext = window.AudioContext || window.webkitAudioContext;
-const ctx = new AudioContext();
+notes = []
+current_note = None
+start_time = None
 
-const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+for f, t in zip(dominant_freqs, times):
+    if f > 50:
+        midi = int(round(librosa.hz_to_midi(f)))
+        if current_note is None:
+            current_note = midi
+            start_time = t
+        elif midi != current_note:
+            notes.append((current_note, start_time, t))
+            current_note = midi
+            start_time = t
 
-let buffers = {};
-let analyser, micStream, source;
-let recording=false, lastNote=null, lastTime=0;
-let recordedNotes=[];
+if current_note is not None:
+    notes.append((current_note, start_time, times[-1]))
 
-const statusEl = status;
-const melodyEl = melody;
-const currentEl = current;
-const keyBox = keyBox;
+mid = MidiFile()
+track = MidiTrack()
+mid.tracks.append(track)
+track.append(Message('program_change', program=40, time=0))
 
-/* ===== 加载采样 ===== */
-async function loadSamples(){
-  const promises=[];
-  for(let midi=48;midi<=84;midi++){
-    const name=NOTE_NAMES[midi%12]+Math.floor(midi/12-1);
-    promises.push(fetch(`samples/${name}.mp3`)
-      .then(r=>r.arrayBuffer())
-      .then(b=>ctx.decodeAudioData(b))
-      .then(buf=>buffers[midi]=buf)
-    );
-  }
-  await Promise.all(promises);
-}
-loadSamples();
+ticks_per_beat = mid.ticks_per_beat
 
-/* ===== 音高检测 ===== */
-function freqToMidi(f){
-  return Math.round(12*Math.log2(f/440)+69);
-}
-function autoCorrelate(buf,sr){
-  let rms=0;
-  for(let i=0;i<buf.length;i++) rms+=buf[i]*buf[i];
-  rms=Math.sqrt(rms/buf.length);
-  if(rms<0.015) return -1;
+def sec_to_ticks(sec):
+    return int(sec * ticks_per_beat * 2)
 
-  let c=new Array(buf.length).fill(0);
-  for(let i=0;i<buf.length;i++)
-    for(let j=0;j<buf.length-i;j++)
-      c[i]+=buf[j]*buf[j+i];
+last_tick = 0
+for note, start, end in notes:
+    start_tick = sec_to_ticks(start)
+    end_tick = sec_to_ticks(end)
+    delta = max(0, start_tick - last_tick)
+    track.append(Message('note_on', note=note, velocity=64, time=delta))
+    track.append(Message('note_off', note=note, velocity=64, time=max(1, end_tick - start_tick)))
+    last_tick = end_tick
 
-  let d=0;
-  while(c[d]>c[d+1]) d++;
-  let max=d;
-  for(let i=d;i<c.length;i++) if(c[i]>c[max]) max=i;
-  return sr/max;
-}
+midi_path = "/mnt/data/rough_violin.mid"
+mid.save(midi_path)
 
-/* ===== 录音 ===== */
-async function startRecording(){
-  recordedNotes=[]; melodyEl.innerHTML="";
-  statusEl.textContent="3…";
-  await ctx.resume();
-  let c=3;
-  const t=setInterval(()=>{
-    c--; statusEl.textContent=c>0?c+"…":"录音中";
-    if(c<=0) clearInterval(t);
-  },1000);
+midi_path
 
-  setTimeout(async()=>{
-    micStream=await navigator.mediaDevices.getUserMedia({audio:true});
-    source=ctx.createMediaStreamSource(micStream);
-    analyser=ctx.createAnalyser();
-    analyser.fftSize=2048;
-    source.connect(analyser);
-    recording=true;
-    lastTime=performance.now();
-    listen();
-  },3000);
-}
-
-function stopRecording(){
-  recording=false;
-  if(micStream) micStream.getTracks().forEach(t=>t.stop());
-  if(lastNote) recordedNotes.push(lastNote);
-  renderMelody(); detectKey();
-  statusEl.textContent="已停止";
-}
-
-function listen(){
-  if(!recording) return;
-  const buf=new Float32Array(analyser.fftSize);
-  analyser.getFloatTimeDomainData(buf);
-  const f=autoCorrelate(buf,ctx.sampleRate);
-  const now=performance.now();
-
-  if(f>80 && f<1000){
-    const midi=freqToMidi(f);
-    currentEl.textContent=NOTE_NAMES[midi%12];
-    if(!lastNote || lastNote.midi!==midi){
-      if(lastNote) recordedNotes.push(lastNote);
-      lastNote={midi,dur:0};
-    }
-  }
-  if(lastNote) lastNote.dur+=now-lastTime;
-  lastTime=now;
-  requestAnimationFrame(listen);
-}
-
-/* ===== 回放（采样） ===== */
-async function playRecorded(){
-  await ctx.resume();
-  let t=ctx.currentTime+0.1;
-  recordedNotes.forEach(n=>{
-    const src=ctx.createBufferSource();
-    src.buffer=buffers[n.midi];
-    src.connect(ctx.destination);
-    src.start(t);
-    t+=n.dur/1000;
-  });
-}
-
-/* ===== UI ===== */
-function renderMelody(){
-  melodyEl.innerHTML="";
-  recordedNotes.forEach(n=>{
-    const s=document.createElement("span");
-    s.textContent=NOTE_NAMES[n.midi%12];
-    melodyEl.appendChild(s);
-  });
-}
-
-/* ===== 调性 ===== */
-function detectKey(){
-  const MAJ=[0,2,4,5,7,9,11], MIN=[0,2,3,5,7,8,10];
-  const h=Array(12).fill(0);
-  recordedNotes.forEach(n=>h[n.midi%12]++);
-  let best={s:-1,n:"—"};
-  for(let t=0;t<12;t++){
-    let m=MAJ.reduce((s,x)=>s+h[(t+x)%12],0);
-    let n=MIN.reduce((s,x)=>s+h[(t+x)%12],0);
-    if(m>best.s) best={s:m,n:NOTE_NAMES[t]+" 大调"};
-    if(n>best.s) best={s:n,n:NOTE_NAMES[t]+" 小调"};
-  }
-  keyBox.textContent="调性："+best.n;
-}
-
-startBtn.onclick=startRecording;
-stopBtn.onclick=stopRecording;
-playBtn.onclick=playRecorded;
-</script>
-</body>
-</html>
 
